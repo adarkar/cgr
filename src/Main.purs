@@ -73,16 +73,17 @@ myComp =
   where
 
   initialState :: State
-  initialState = (-1)
+  initialState = 0
 
   render :: State -> H.ComponentHTML Query
   render state =
-    let (Config s) = case test_run.run L.!! state of
+    let (Config s) = case test_run.run L.!! (state-1) of
             Just s -> T.snd s
             Nothing -> test_run.reset
     in
     HH.div_
       [ HH.button [ HE.onClick (HE.input_ $ Step (-1)) ] [ HH.text "<" ]
+      , HH.text $ " " <> show state <> " "
       , HH.button [ HE.onClick (HE.input_ $ Step 1) ] [ HH.text ">" ]
       , HH.ul_ $ map f (Map.toUnfoldable s.env)
       ]
