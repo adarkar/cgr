@@ -10,7 +10,7 @@ import Data.Tuple as T
 -- import Data.Unfoldable
 import Halogen as H
 import Halogen.HTML as HH
--- import Halogen.HTML.Events as HE
+import Halogen.HTML.Events as HE
 -- import Halogen.HTML.Properties as HP
 import Halogen.Aff as HA
 import Halogen.VDom.Driver (runUI)
@@ -49,15 +49,20 @@ myComp =
     let (Config st) = state
         s = st.env
     in
-    HH.ul_ $ map f (Map.toUnfoldable s)
+    HH.div_
+      [ HH.button
+          [ HE.onClick (HE.input_ Toggle) ]
+          [ HH.text "ciao" ]
+      , HH.ul_ $ map f (Map.toUnfoldable s)
+      ]
     where
     f (T.Tuple k v) = HH.li_ [ HH.text $ k <> ": " <> show v ]
 
   eval :: Query ~> H.ComponentDSL State Query Message m
   eval = case _ of
     Toggle next -> do
-      state <- H.get
-      let nextState = state
+      (Config state) <- H.get
+      let nextState = Config $ state { env = Map.insert "a" 5 state.env }
       H.put nextState
       H.raise $ Toggled true
       pure next
