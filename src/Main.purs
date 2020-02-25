@@ -5,6 +5,8 @@ import Effect (Effect)
 import Effect.Console (log)
 import Data.Maybe (fromMaybe, Maybe(..))
 import Data.List as L
+import Data.List.NonEmpty as NL
+import Data.NonEmpty (NonEmpty(..))
 import Data.Map as Map
 -- import Data.Array
 import Data.Tuple as T
@@ -43,11 +45,11 @@ data Expr =
   | ETernop Expr Expr Expr
 
 data Config =
-  Config { env :: Map.Map String Int }
+  Config (NL.NonEmptyList { env :: Map.Map String Int })
 
 ceval :: Expr -> Config -> Int
 ceval e (Config c) = case e of
-  EId id -> fromMaybe 0 $ Map.lookup id c.env
+  EId id -> fromMaybe 0 $ Map.lookup id (NL.head c).env
   EConst k -> k
   EBinop op a b -> (primopBin op) (ceval a $ Config c) (ceval b $ Config c)
   EUnop _ _ -> 0
@@ -70,8 +72,10 @@ run p (Config reset) = { reset: Config reset, run: go reset p }
       v = case op.val of
         VI i -> i
         VE e -> ceval e (Config c)
-      c2 = { env: Map.insert op.id v c.env }
-    in L.singleton $ T.Tuple (As $ op { val = VI v }) (Config c2)
+      top = NL.head c
+      rest = NL.tail c
+      c2 = { env: Map.insert op.id v top.env }
+    in L.singleton $ T.Tuple (As $ op { val = VI v }) (Config $ NL.NonEmptyList $ NonEmpty c2 rest)
   go c (ProgSeq L.Nil) = L.Nil
   go c (ProgSeq (L.Cons x xs)) =
     let
@@ -101,7 +105,7 @@ test_prog = ProgSeq $ L.fromFoldable
   ]
 
 test_reset :: Config
-test_reset = Config { env: Map.empty }
+test_reset = Config $ NL.singleton { env: Map.empty }
 
 test_run :: Run
 test_run = run test_prog test_reset
@@ -135,12 +139,17 @@ myComp =
             Just s -> T.snd s
             Nothing -> test_run.reset
     in
-    HH.div_
+    HH.div_ $
       [ HH.button [ HE.onClick (HE.input_ $ Step (-1)) ] [ HH.text "<" ]
       , HH.text $ " " <> show state <> " "
       , HH.button [ HE.onClick (HE.input_ $ Step 1) ] [ HH.text ">" ]
-      , HH.ul_ $ map f (Map.toUnfoldable s.env)
-      ]
+      ] <>
+      (NL.toUnfoldable $ map (\fr ->
+        HH.div_
+          [ HH.text "frame"
+          , HH.ul_ $ map f (Map.toUnfoldable fr.env)
+          ])
+        s)
     where
     f (T.Tuple k v) = HH.li_ [ HH.text $ k <> ": " <> show v ]
 
