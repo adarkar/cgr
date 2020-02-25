@@ -44,8 +44,10 @@ data Expr =
   | EUnop PrimopUn Expr
   | ETernop Expr Expr Expr
 
+type Env = { env :: Map.Map String Int }
+
 data Config =
-  Config (NL.NonEmptyList { env :: Map.Map String Int })
+  Config (NL.NonEmptyList Env)
 
 ceval :: Expr -> Config -> Int
 ceval e (Config c) = case e of
