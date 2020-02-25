@@ -24,7 +24,9 @@ data Val =
   | VE Expr
 
 data Op =
-  As { id :: String , val :: Val }
+    As { id :: String , val :: Val }
+  | Call String (L.List Int)
+  | Ret
 
 data PrimopBin =
  PoAdd | PoMul | PoLT
@@ -40,14 +42,14 @@ primopBin op = case op of
 data Expr =
     EId String
   | EConst Int
+  -- later, void first: | ECall String (L.List Expr)
   | EBinop PrimopBin Expr Expr
   | EUnop PrimopUn Expr
   | ETernop Expr Expr Expr
 
-type Env = { env :: Map.Map String Int }
+type Frame = { env :: Map.Map String Int }
 
-data Config =
-  Config (NL.NonEmptyList Env)
+data Config = Config (NL.NonEmptyList Frame)
 
 ceval :: Expr -> Config -> Int
 ceval e (Config c) = case e of
