@@ -3,10 +3,10 @@ module Main where
 import Prelude
 import Effect (Effect)
 import Effect.Console (log)
+import Data.Maybe (fromMaybe, Maybe(..))
 import Data.List as L
 import Data.Map as Map
 -- import Data.Array
-import Data.Maybe (Maybe(..))
 import Data.Tuple as T
 -- import Data.Unfoldable
 -- import Data.Foldable
@@ -17,33 +17,87 @@ import Halogen.HTML.Events as HE
 import Halogen.Aff as HA
 import Halogen.VDom.Driver (runUI)
 
+data Val =
+    VI Int
+  | VE Expr
+
 data Op =
-  As { id :: String , val :: Int }
+  As { id :: String , val :: Val }
+
+data PrimopBin =
+ PoAdd | PoMul | PoLT
+
+data PrimopUn = PoNeg
+
+primopBin :: PrimopBin -> Int -> Int -> Int
+primopBin op = case op of
+  PoAdd -> (+)
+  PoMul -> (*)
+  PoLT -> \a b -> if a < b then 1 else 0
+
+data Expr =
+    EId String
+  | EConst Int
+  | EBinop PrimopBin Expr Expr
+  | EUnop PrimopUn Expr
+  | ETernop Expr Expr Expr
 
 data Config =
   Config { env :: Map.Map String Int }
 
-type Prog = L.List Op
+ceval :: Expr -> Config -> Int
+ceval e (Config c) = case e of
+  EId id -> fromMaybe 0 $ Map.lookup id c.env
+  EConst k -> k
+  EBinop op a b -> (primopBin op) (ceval a $ Config c) (ceval b $ Config c)
+  EUnop _ _ -> 0
+  ETernop _ _ _ -> 0
+
+data Prog =
+    ProgOp Op
+  | ProgSeq (L.List Prog)
+  | ProgWhile Expr Prog
+  | ProgIf Expr Prog
+  | ProgIfElse Expr Prog Prog
 
 type Run = { reset :: Config, run :: L.List (T.Tuple Op Config) }
 
 run :: Prog -> Config -> Run
 run p (Config reset) = { reset: Config reset, run: go reset p }
   where
-  go c L.Nil = L.Nil
-  go c (L.Cons x xs) =
-    let c2 = step x c
-    in L.Cons (T.Tuple x (Config c2)) (go c2 xs)
-  step (As op) c = { env: Map.insert op.id op.val c.env }
+  go c (ProgOp (As op)) =
+    let
+      v = case op.val of
+        VI i -> i
+        VE e -> ceval e (Config c)
+      c2 = { env: Map.insert op.id v c.env }
+    in L.singleton $ T.Tuple (As $ op { val = VI v }) (Config c2)
+  go c (ProgSeq L.Nil) = L.Nil
+  go c (ProgSeq (L.Cons x xs)) =
+    let
+      seq = go c x
+      (Config c2) = fromMaybe (Config c) <<< map T.snd <<< L.last $ seq
+      rest = go c2 $ ProgSeq xs
+    in seq <> rest
+  go c w@(ProgWhile e x) =
+    case ceval e (Config c) of
+      0 -> L.Nil
+      _ ->
+        let
+          seq = go c x
+          (Config c2) = fromMaybe (Config c) <<< map T.snd <<< L.last $ seq
+          rest = go c2 w
+        in seq <> rest
+  go c _ = L.Nil
 
 test_prog :: Prog
-test_prog = L.fromFoldable
-  [ As { id: "i", val: 0 }
-  , As { id: "x", val: 0 }
-  , As { id: "i", val: 1 }
-  , As { id: "x", val: 1 }
-  , As { id: "i", val: 2 }
-  , As { id: "x", val: 3 }
+test_prog = ProgSeq $ L.fromFoldable
+  [ ProgOp $ As { id: "i", val: VI 0 }
+  , ProgOp $ As { id: "x", val: VI 0 }
+  , ProgWhile (EBinop PoLT (EId "i") (EConst 5)) $ ProgSeq $ L.fromFoldable
+    [ ProgOp $ As { id: "x", val: VE $ EBinop PoAdd (EId "x") (EId "i") }
+    , ProgOp $ As { id: "i", val: VE $ EBinop PoAdd (EId "i") (EConst 1) }
+    ]
   ]
 
 test_reset :: Config
