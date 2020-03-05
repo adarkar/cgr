@@ -152,6 +152,9 @@ test_run = run test_prog test_reset
 test_runm :: RWS.RWSResult Config Unit (L.List Config)
 test_runm = RWS.runRWS (CC.runContT (runm test_prog (\_ -> pure unit)) (\_ -> pure unit)) unit test_reset
 
+runm2lconfig :: RWS.RWSResult Config Unit (L.List Config) -> L.List Config
+runm2lconfig r = let RWS.RWSResult s a w = r in w
+
 type State = Int
 
 data Query a
@@ -177,9 +180,9 @@ myComp =
 
   render :: State -> H.ComponentHTML Query
   render state =
-    let (Config s) = case test_run.run L.!! (state-1) of
-            Just s -> T.snd s
-            Nothing -> test_run.reset
+    let (Config s) = case (runm2lconfig test_runm) L.!! (state-1) of
+            Just s -> s
+            Nothing -> test_reset
     in
     HH.div_ $
       [ HH.button [ HE.onClick (HE.input_ $ Step (-1)) ] [ HH.text "<" ]
