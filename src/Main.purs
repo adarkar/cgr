@@ -11,7 +11,9 @@ import Data.Map as Map
 -- import Data.Array
 import Data.Tuple as T
 -- import Data.Unfoldable
--- import Data.Foldable
+import Data.Foldable as F
+import Control.Monad.RWS as RWS
+import Control.Monad.Cont as CC
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -117,11 +119,38 @@ test_prog = ProgSeq $ L.fromFoldable
     ]
   ]
 
+type RunM = CC.ContT Unit (RWS.RWS Unit (L.List Config) Config) Unit
+
+runm :: ProgF -> (Unit -> RunM) -> RunM
+runm p k = case p of
+  ProgOp (As op) -> CC.lift $ do
+    (Config c) <- RWS.get
+    let
+      v = case op.val of
+        VI i -> i
+        VE e -> ceval e (Config c)
+      top = NL.head c
+      rest = NL.tail c
+      c2 = { env: Map.insert op.id v top.env }
+      y = Config $ NL.NonEmptyList $ NonEmpty c2 rest
+    RWS.tell $ L.singleton y
+    RWS.put y
+  ProgSeq xs -> F.for_ xs $ \x -> runm x k
+  ProgWhile e x -> do
+    (Config c) <- CC.lift RWS.get
+    case ceval e (Config c) of
+      0 -> pure unit
+      _ -> runm x k *> runm p k
+  _ -> pure unit
+
 test_reset :: Config
 test_reset = Config $ NL.singleton { env: Map.empty }
 
 test_run :: Run
 test_run = run test_prog test_reset
+
+test_runm :: RWS.RWSResult Config Unit (L.List Config)
+test_runm = RWS.runRWS (CC.runContT (runm test_prog (\_ -> pure unit)) (\_ -> pure unit)) unit test_reset
 
 type State = Int
 
