@@ -109,8 +109,8 @@ run p (Config reset) = { reset: Config reset, run: go reset p }
         in seq <> rest
   go c _ = L.Nil
 
-test_prog :: ProgF
-test_prog = ProgSeq $ L.fromFoldable
+test_prog_main :: ProgF
+test_prog_main = ProgSeq $ L.fromFoldable
   [ ProgOp $ As { id: "i", val: VI 0 }
   , ProgOp $ As { id: "x", val: VI 0 }
   , ProgWhile (EBinop PoLT (EId "i") (EConst 5)) $ ProgSeq $ L.fromFoldable
@@ -119,7 +119,16 @@ test_prog = ProgSeq $ L.fromFoldable
     ]
   ]
 
-type RunM = CC.ContT Unit (RWS.RWS Unit (L.List Config) Config) Unit
+test_prog_foo :: ProgF
+test_prog_foo = ProgOp Ret
+
+test_prog :: Prog
+test_prog = L.fromFoldable
+  [ { fname: "main", argns: L.Nil, code: test_prog_main }
+  , { fname: "foo", argns: L.Nil, code: test_prog_foo }
+  ]
+
+type RunM = CC.ContT Unit (RWS.RWS Prog (L.List Config) Config) Unit
 
 runm :: ProgF -> (Unit -> RunM) -> RunM
 runm p k = case p of
@@ -135,6 +144,12 @@ runm p k = case p of
       y = Config $ NL.NonEmptyList $ NonEmpty c2 rest
     RWS.tell $ L.singleton y
     RWS.put y
+  ProgOp (Call id args) -> do
+    prog <- CC.lift RWS.ask
+    let prog_fs = flip map prog $ \{fname: f, code: c} -> T.Tuple f c
+    case T.lookup id prog_fs of
+      Just f -> CC.callCC $ runm f
+      Nothing -> pure unit
   ProgSeq xs -> F.for_ xs $ \x -> runm x k
   ProgWhile e x -> do
     (Config c) <- CC.lift RWS.get
@@ -146,11 +161,10 @@ runm p k = case p of
 test_reset :: Config
 test_reset = Config $ NL.singleton { env: Map.empty }
 
-test_run :: Run
-test_run = run test_prog test_reset
-
-test_runm :: RWS.RWSResult Config Unit (L.List Config)
-test_runm = RWS.runRWS (CC.runContT (runm test_prog (\_ -> pure unit)) (\_ -> pure unit)) unit test_reset
+test_runm :: Prog -> RWS.RWSResult Config Unit (L.List Config)
+test_runm prog =
+  let r = runm (ProgOp $ Call "main" L.Nil) pure
+  in RWS.runRWS (CC.runContT r pure) prog test_reset
 
 runm2lconfig :: RWS.RWSResult Config Unit (L.List Config) -> L.List Config
 runm2lconfig r = let RWS.RWSResult s a w = r in w
@@ -180,7 +194,7 @@ myComp =
 
   render :: State -> H.ComponentHTML Query
   render state =
-    let cs = runm2lconfig test_runm
+    let cs = runm2lconfig $ test_runm test_prog
     in
     HH.div_ $
       [ HH.button [ HE.onClick (HE.input_ $ Step (-1)) ] [ HH.text "<" ]
@@ -216,7 +230,7 @@ myComp =
 main :: Effect Unit
 main = do
   log "Hello 🍝!"
-  log <<< show $ L.length test_run.run
+  log <<< show $ L.length $ runm2lconfig $ test_runm test_prog
   HA.runHalogenAff do
     body <- HA.awaitBody
     runUI myComp unit body
