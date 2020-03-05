@@ -51,7 +51,7 @@ data Expr =
   | EUnop PrimopUn Expr
   | ETernop Expr Expr Expr
 
-type Frame = { env :: Map.Map String Int }
+type Frame = { name :: String, env :: Map.Map String Int }
 
 data Config = Config (NL.NonEmptyList Frame)
 
@@ -74,6 +74,7 @@ type Prog = L.List { fname :: String, argns :: L.List String, code :: ProgF }
 
 type Run = { reset :: Config, run :: L.List (T.Tuple Op Config) }
 
+{-
 run :: ProgF -> Config -> Run
 run p (Config reset) = { reset: Config reset, run: go reset p }
   where
@@ -108,6 +109,7 @@ run p (Config reset) = { reset: Config reset, run: go reset p }
           rest = go c2 w
         in seq <> rest
   go c _ = L.Nil
+-}
 
 test_prog_main :: ProgF
 test_prog_main = ProgSeq $ L.fromFoldable
@@ -117,15 +119,21 @@ test_prog_main = ProgSeq $ L.fromFoldable
     [ ProgOp $ As { id: "x", val: VE $ EBinop PoAdd (EId "x") (EId "i") }
     , ProgOp $ As { id: "i", val: VE $ EBinop PoAdd (EId "i") (EConst 1) }
     ]
+  , ProgOp $ Call "foo" $ L.fromFoldable [19]
+  , ProgOp Ret
   ]
 
 test_prog_foo :: ProgF
-test_prog_foo = ProgOp Ret
+test_prog_foo = ProgSeq $ L.fromFoldable
+  [ ProgOp $ As { id: "i", val: VI 11 }
+  , ProgOp Ret
+  , ProgOp $ As { id: "i", val: VI 4 }
+  ]
 
 test_prog :: Prog
 test_prog = L.fromFoldable
   [ { fname: "main", argns: L.Nil, code: test_prog_main }
-  , { fname: "foo", argns: L.Nil, code: test_prog_foo }
+  , { fname: "foo", argns: L.fromFoldable ["i"], code: test_prog_foo }
   ]
 
 type RunM = CC.ContT Unit (RWS.RWS Prog (L.List Config) Config) Unit
@@ -133,23 +141,33 @@ type RunM = CC.ContT Unit (RWS.RWS Prog (L.List Config) Config) Unit
 runm :: ProgF -> (Unit -> RunM) -> RunM
 runm p k = case p of
   ProgOp (As op) -> CC.lift $ do
-    (Config c) <- RWS.get
+    Config c <- RWS.get
     let
       v = case op.val of
         VI i -> i
         VE e -> ceval e (Config c)
       top = NL.head c
       rest = NL.tail c
-      c2 = { env: Map.insert op.id v top.env }
+      c2 = top { env = Map.insert op.id v top.env }
       y = Config $ NL.NonEmptyList $ NonEmpty c2 rest
     RWS.tell $ L.singleton y
     RWS.put y
   ProgOp (Call id args) -> do
     prog <- CC.lift RWS.ask
-    let prog_fs = flip map prog $ \{fname: f, code: c} -> T.Tuple f c
+    let prog_fs = flip map prog $ \{fname: f, argns: as, code: c} -> T.Tuple f (T.Tuple as c)
     case T.lookup id prog_fs of
-      Just f -> CC.callCC $ runm f
+      Just (T.Tuple as f) -> do
+        Config c <- CC.lift RWS.get
+        let
+          fr = { name: id, env: Map.fromFoldable $ L.zip as args }
+          y = Config $ NL.NonEmptyList $ NonEmpty fr (NL.toList c)
+        CC.lift $ RWS.tell $ L.singleton y
+        CC.lift $ RWS.put y
+        CC.callCC $ runm f
+        CC.lift $ RWS.put $ Config c
+        CC.lift $ RWS.get >>= (RWS.tell <<< L.singleton)
       Nothing -> pure unit
+  ProgOp Ret -> k unit
   ProgSeq xs -> F.for_ xs $ \x -> runm x k
   ProgWhile e x -> do
     (Config c) <- CC.lift RWS.get
@@ -159,7 +177,7 @@ runm p k = case p of
   _ -> pure unit
 
 test_reset :: Config
-test_reset = Config $ NL.singleton { env: Map.empty }
+test_reset = Config $ NL.singleton { name: "Bot", env: Map.empty }
 
 test_runm :: Prog -> RWS.RWSResult Config Unit (L.List Config)
 test_runm prog =
@@ -207,7 +225,7 @@ myComp =
           ] <>
           (flip map (NL.toUnfoldable s) $ \fr ->
             HH.div_
-              [ HH.text "frame"
+              [ HH.text $ "fr: " <> fr.name
               , HH.ul_ $ map f (Map.toUnfoldable fr.env)
               ]
           )
