@@ -27,6 +27,8 @@ data Op =
     As { id :: String , val :: Val }
   | Call String (L.List Int)
   | Ret
+  | IOW String (L.List Int)
+  | IOR String (L.List Int)
 
 data PrimopBin =
  PoAdd | PoMul | PoLT
@@ -59,16 +61,18 @@ ceval e (Config c) = case e of
   EUnop _ _ -> 0
   ETernop _ _ _ -> 0
 
-data Prog =
+data ProgF =
     ProgOp Op
-  | ProgSeq (L.List Prog)
-  | ProgWhile Expr Prog
-  | ProgIf Expr Prog
-  | ProgIfElse Expr Prog Prog
+  | ProgSeq (L.List ProgF)
+  | ProgWhile Expr ProgF
+  | ProgIf Expr ProgF
+  | ProgIfElse Expr ProgF ProgF
+
+type Prog = L.List { fname :: String, argns :: L.List String, code :: ProgF }
 
 type Run = { reset :: Config, run :: L.List (T.Tuple Op Config) }
 
-run :: Prog -> Config -> Run
+run :: ProgF -> Config -> Run
 run p (Config reset) = { reset: Config reset, run: go reset p }
   where
   go c (ProgOp (As op)) =
@@ -80,6 +84,11 @@ run p (Config reset) = { reset: Config reset, run: go reset p }
       rest = NL.tail c
       c2 = { env: Map.insert op.id v top.env }
     in L.singleton $ T.Tuple (As $ op { val = VI v }) (Config $ NL.NonEmptyList $ NonEmpty c2 rest)
+  go c (ProgOp call@(Call id args)) =
+    let
+      argnames = L.Nil
+      fr = { env: Map.fromFoldable $ L.zip argnames args }
+    in L.singleton $ T.Tuple call (Config $ NL.NonEmptyList $ NonEmpty fr (NL.toList c))
   go c (ProgSeq L.Nil) = L.Nil
   go c (ProgSeq (L.Cons x xs)) =
     let
@@ -98,7 +107,7 @@ run p (Config reset) = { reset: Config reset, run: go reset p }
         in seq <> rest
   go c _ = L.Nil
 
-test_prog :: Prog
+test_prog :: ProgF
 test_prog = ProgSeq $ L.fromFoldable
   [ ProgOp $ As { id: "i", val: VI 0 }
   , ProgOp $ As { id: "x", val: VI 0 }
