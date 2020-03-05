@@ -74,43 +74,6 @@ type Prog = L.List { fname :: String, argns :: L.List String, code :: ProgF }
 
 type Run = { reset :: Config, run :: L.List (T.Tuple Op Config) }
 
-{-
-run :: ProgF -> Config -> Run
-run p (Config reset) = { reset: Config reset, run: go reset p }
-  where
-  go c (ProgOp (As op)) =
-    let
-      v = case op.val of
-        VI i -> i
-        VE e -> ceval e (Config c)
-      top = NL.head c
-      rest = NL.tail c
-      c2 = { env: Map.insert op.id v top.env }
-    in L.singleton $ T.Tuple (As $ op { val = VI v }) (Config $ NL.NonEmptyList $ NonEmpty c2 rest)
-  go c (ProgOp call@(Call id args)) =
-    let
-      argnames = L.Nil
-      fr = { env: Map.fromFoldable $ L.zip argnames args }
-    in L.singleton $ T.Tuple call (Config $ NL.NonEmptyList $ NonEmpty fr (NL.toList c))
-  go c (ProgSeq L.Nil) = L.Nil
-  go c (ProgSeq (L.Cons x xs)) =
-    let
-      seq = go c x
-      (Config c2) = fromMaybe (Config c) <<< map T.snd <<< L.last $ seq
-      rest = go c2 $ ProgSeq xs
-    in seq <> rest
-  go c w@(ProgWhile e x) =
-    case ceval e (Config c) of
-      0 -> L.Nil
-      _ ->
-        let
-          seq = go c x
-          (Config c2) = fromMaybe (Config c) <<< map T.snd <<< L.last $ seq
-          rest = go c2 w
-        in seq <> rest
-  go c _ = L.Nil
--}
-
 test_prog_main :: ProgF
 test_prog_main = ProgSeq $ L.fromFoldable
   [ ProgOp $ As { id: "i", val: VI 0 }
