@@ -8,7 +8,7 @@ import Data.List as L
 import Data.List.NonEmpty as NL
 import Data.NonEmpty (NonEmpty(..))
 import Data.Map as Map
--- import Data.Array
+import Data.Array as A
 import Data.Tuple as T
 -- import Data.Unfoldable
 import Data.Foldable as F
@@ -180,21 +180,24 @@ myComp =
 
   render :: State -> H.ComponentHTML Query
   render state =
-    let (Config s) = case (runm2lconfig test_runm) L.!! (state-1) of
-            Just s -> s
-            Nothing -> test_reset
+    let cs = runm2lconfig test_runm
     in
     HH.div_ $
       [ HH.button [ HE.onClick (HE.input_ $ Step (-1)) ] [ HH.text "<" ]
       , HH.text $ " " <> show state <> " "
       , HH.button [ HE.onClick (HE.input_ $ Step 1) ] [ HH.text ">" ]
       ] <>
-      (NL.toUnfoldable $ map (\fr ->
-        HH.div_
-          [ HH.text "frame"
-          , HH.ul_ $ map f (Map.toUnfoldable fr.env)
-          ])
-        s)
+      (flip A.mapWithIndex (L.toUnfoldable cs) $ \i (Config s) ->
+        HH.div_ $
+          [ HH.text $ "t: " <> show i
+          ] <>
+          (flip map (NL.toUnfoldable s) $ \fr ->
+            HH.div_
+              [ HH.text "frame"
+              , HH.ul_ $ map f (Map.toUnfoldable fr.env)
+              ]
+          )
+      )
     where
     f (T.Tuple k v) = HH.li_ [ HH.text $ k <> ": " <> show v ]
 
