@@ -12,6 +12,7 @@ import Data.Array as A
 import Data.Tuple as T
 -- import Data.Unfoldable
 import Data.Foldable as F
+import Data.Traversable (for)
 import Control.Monad.RWS (RWS, tell, ask, get, put, runRWS, RWSResult(..))
 import Control.Monad.Cont (ContT, callCC, runContT)
 import Control.Monad.Trans.Class (lift)
@@ -29,7 +30,7 @@ data Val =
 data Op =
     As { id :: String , val :: Val }
   | Call String (L.List Int)
-  | Ret
+  | Ret Int
   | IOW String (L.List Int)
   | IOR String (L.List Int)
 
@@ -47,7 +48,7 @@ primopBin op = case op of
 data Expr =
     EId String
   | EConst Int
-  -- later, void first: | ECall String (L.List Expr)
+  | ECall String (L.List Expr)
   | EBinop PrimopBin Expr Expr
   | EUnop PrimopUn Expr
   | ETernop Expr Expr Expr
@@ -61,7 +62,10 @@ ceval e = case e of
   EId id -> do
     Config c <- lift get
     pure $ fromMaybe 0 $ Map.lookup id (NL.head c).env
-  EConst k -> pure $ k
+  EConst k -> pure k
+  ECall id args -> do
+    avs <- for args ceval
+    runm (ProgOp $ Call id avs) pure
   EBinop op a b -> do
     av <- ceval a
     bv <- ceval b
@@ -86,14 +90,15 @@ test_prog_main = ProgSeq $ L.fromFoldable
     [ ProgOp $ As { id: "x", val: VE $ EBinop PoAdd (EId "x") (EId "i") }
     , ProgOp $ As { id: "i", val: VE $ EBinop PoAdd (EId "i") (EConst 1) }
     ]
-  , ProgOp $ Call "foo" $ L.fromFoldable [19]
-  , ProgOp Ret
+  , ProgOp $ As { id: "a", val: VE $ ECall "foo" $
+      L.fromFoldable [EBinop PoAdd (EId "x") (EConst 1)] }
+  , ProgOp $ Ret 0
   ]
 
 test_prog_foo :: ProgF
 test_prog_foo = ProgSeq $ L.fromFoldable
-  [ ProgOp $ As { id: "i", val: VI 11 }
-  , ProgOp Ret
+  [ ProgOp $ As { id: "i", val: VI 19 }
+  , ProgOp $ Ret 5
   , ProgOp $ As { id: "i", val: VI 4 }
   ]
 
@@ -103,9 +108,9 @@ test_prog = L.fromFoldable
   , { fname: "foo", argns: L.fromFoldable ["i"], code: test_prog_foo }
   ]
 
-type RunM a = ContT Unit (RWS Prog (L.List Config) Config) a
+type RunM a = ContT Int (RWS Prog (L.List Config) Config) a
 
-runm :: ProgF -> (Unit -> RunM Unit) -> RunM Unit
+runm :: ProgF -> (Int -> RunM Int) -> RunM Int
 runm p k = case p of
   ProgOp (As op) -> do
     Config c <- lift $ get
@@ -119,6 +124,7 @@ runm p k = case p of
       y = Config $ NL.NonEmptyList $ NonEmpty c2 rest
     lift $ tell $ L.singleton y
     lift $ put y
+    pure v
   ProgOp (Call id args) -> do
     prog <- lift ask
     let prog_fs = flip map prog $ \{fname: f, argns: as, code: c} -> T.Tuple f (T.Tuple as c)
@@ -130,28 +136,31 @@ runm p k = case p of
           y = Config $ NL.NonEmptyList $ NonEmpty fr (NL.toList c)
         lift $ tell $ L.singleton y
         lift $ put y
-        callCC $ runm f
+        v <- callCC $ runm f
         lift $ put $ Config c
         lift $ get >>= (tell <<< L.singleton)
-      Nothing -> pure unit
-  ProgOp Ret -> k unit
-  ProgSeq xs -> F.for_ xs $ \x -> runm x k
+        pure v
+      Nothing -> pure 0 -- should be unreachable (func name not in prog)
+  ProgOp (Ret v) -> k v
+  ProgSeq xs -> do
+    F.for_ xs $ \x -> runm x k
+    pure 0
   ProgWhile e x -> do
     b <- ceval e
     case b of
-      0 -> pure unit
+      0 -> pure 0
       _ -> runm x k *> runm p k
-  _ -> pure unit
+  _ -> pure 0
 
 test_reset :: Config
 test_reset = Config $ NL.singleton { name: "Bot", env: Map.empty }
 
-test_runm :: Prog -> RWSResult Config Unit (L.List Config)
+test_runm :: Prog -> RWSResult Config Int (L.List Config)
 test_runm prog =
   let r = runm (ProgOp $ Call "main" L.Nil) pure
   in runRWS (runContT r pure) prog test_reset
 
-runm2lconfig :: RWSResult Config Unit (L.List Config) -> L.List Config
+runm2lconfig :: RWSResult Config Int (L.List Config) -> L.List Config
 runm2lconfig r = let RWSResult s a w = r in w
 
 type State = Int
