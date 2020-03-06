@@ -23,9 +23,21 @@ import Halogen.HTML.Events as HE
 import Halogen.Aff as HA
 import Halogen.VDom.Driver (runUI)
 
+data Val =
+    VVoid
+  | VInt Int
+  | VFloat Number
+  | VArray (Array Val)
+  | VRef Int String -- to a frame: int fr index, string var name
+
+instance showVal :: Show Val where
+  show VVoid = "void"
+  show (VInt x) = show x
+  show _ = "todo"
+
 data Op =
     As { id :: String , val :: Expr }
-  | Call String (L.List Int)
+  | Call String (L.List Val)
   | Ret Expr
   | IOW
   | IOR String (L.List Int)
@@ -43,21 +55,21 @@ primopBin op = case op of
 
 data Expr =
     EId String
-  | EConst Int
+  | EConst Val
   | ECall String (L.List Expr)
   | EBinop PrimopBin Expr Expr
   | EUnop PrimopUn Expr
   | ETernop Expr Expr Expr
 
-type Frame = { name :: String, env :: Map.Map String Int }
+type Frame = { name :: String, env :: Map.Map String Val }
 
 data Config = Config (NL.NonEmptyList Frame)
 
-ceval :: Expr -> RunM Int
+ceval :: Expr -> RunM Val
 ceval e = case e of
   EId id -> do
     Config c <- lift get
-    pure $ fromMaybe 0 $ Map.lookup id (NL.head c).env
+    pure $ fromMaybe VVoid $ Map.lookup id (NL.head c).env
   EConst k -> pure k
   ECall id args -> do
     avs <- for args ceval
@@ -65,9 +77,15 @@ ceval e = case e of
   EBinop op a b -> do
     av <- ceval a
     bv <- ceval b
-    pure $ (primopBin op) av bv
-  EUnop _ _ -> pure 0
-  ETernop _ _ _ -> pure 0
+    let
+      r = case av of
+        VInt avi -> case bv of
+          VInt bvi -> VInt $ (primopBin op) avi bvi
+          _ -> VVoid
+        _ -> VVoid
+    pure r
+  EUnop _ _ -> pure VVoid
+  ETernop _ _ _ -> pure VVoid
 
 data ProgF =
     ProgOp Op
@@ -84,23 +102,23 @@ type Prog = L.List { fname :: String, argns :: Argdef, code :: ProgF }
 
 test_prog_main :: ProgF
 test_prog_main = ProgSeq $ L.fromFoldable
-  [ ProgOp $ As { id: "i", val: EConst 0 }
-  , ProgOp $ As { id: "x", val: EConst 0 }
-  , ProgWhile (EBinop PoLT (EId "i") (EConst 5)) $ ProgSeq $ L.fromFoldable
+  [ ProgOp $ As { id: "i", val: EConst $ VInt 0 }
+  , ProgOp $ As { id: "x", val: EConst $ VInt 0 }
+  , ProgWhile (EBinop PoLT (EId "i") (EConst $ VInt 5)) $ ProgSeq $ L.fromFoldable
     [ ProgOp $ As { id: "x", val: EBinop PoAdd (EId "x") (EId "i") }
-    , ProgOp $ As { id: "i", val: EBinop PoAdd (EId "i") (EConst 1) }
+    , ProgOp $ As { id: "i", val: EBinop PoAdd (EId "i") (EConst $ VInt 1) }
     ]
   , ProgOp $ As { id: "a", val: ECall "foo" $
-      L.fromFoldable [EBinop PoAdd (EId "x") (EConst 1)] }
-  , ProgOp $ Call "printf" $ L.fromFoldable [0,1,2]
-  , ProgOp $ Ret $ EConst 0
+      L.fromFoldable [EBinop PoAdd (EId "x") (EConst $ VInt 1)] }
+  , ProgOp $ Call "printf" $ L.fromFoldable $ map VInt [0,1,2]
+  , ProgOp $ Ret $ EConst $ VInt 0
   ]
 
 test_prog_foo :: ProgF
 test_prog_foo = ProgSeq $ L.fromFoldable
-  [ ProgOp $ As { id: "i", val: EBinop PoAdd (EId "i") (EConst 6) }
-  , ProgOp $ Ret $ EBinop PoAdd (EId "i") (EConst 2)
-  , ProgOp $ As { id: "i", val: EConst 4 }
+  [ ProgOp $ As { id: "i", val: EBinop PoAdd (EId "i") (EConst $ VInt 6) }
+  , ProgOp $ Ret $ EBinop PoAdd (EId "i") (EConst $ VInt 2)
+  , ProgOp $ As { id: "i", val: EConst $ VInt 4 }
   ]
 
 test_prog :: Prog
@@ -114,12 +132,12 @@ stdlib_printf = ProgOp IOW
 
 stdlib :: Prog
 stdlib = L.fromFoldable
-  [ { fname: "printf", argns: Argvar $ L.fromFoldable ["format"] , code: stdlib_printf }
+  [ { fname: "printf", argns: Argvar $ L.fromFoldable ["format"], code: stdlib_printf }
   ]
 
-type RunM a = ContT Int (RWS Prog (L.List Config) Config) a
+type RunM a = ContT Unit (RWS Prog (L.List Config) Config) a
 
-runm :: ProgF -> (Int -> RunM Int) -> RunM Int
+runm :: ProgF -> (Val -> RunM Val) -> RunM Val
 runm p k = case p of
   ProgOp (As op) -> do
     Config c <- lift $ get
@@ -155,27 +173,27 @@ runm p k = case p of
         lift $ put $ Config c
         lift $ get >>= (tell <<< L.singleton)
         pure v
-      Nothing -> pure 0 -- should be unreachable (func name not in prog)
+      Nothing -> pure VVoid -- should be unreachable (func name not in prog)
   ProgOp (Ret e) -> ceval e >>= k
   ProgSeq xs -> do
     F.for_ xs $ \x -> runm x k
-    pure 0
+    pure VVoid
   ProgWhile e x -> do
     b <- ceval e
     case b of
-      0 -> pure 0
+      VInt 0 -> pure VVoid
       _ -> runm x k *> runm p k
-  _ -> pure 0
+  _ -> pure VVoid
 
 test_reset :: Config
 test_reset = Config $ NL.singleton { name: "Bot", env: Map.empty }
 
-test_runm :: Prog -> RWSResult Config Int (L.List Config)
+test_runm :: Prog -> RWSResult Config Unit (L.List Config)
 test_runm prog =
   let r = runm (ProgOp $ Call "main" L.Nil) pure
-  in runRWS (runContT r pure) (prog <> stdlib) test_reset
+  in runRWS (runContT r (\_ -> pure unit)) (prog <> stdlib) test_reset
 
-runm2lconfig :: RWSResult Config Int (L.List Config) -> L.List Config
+runm2lconfig :: RWSResult Config Unit (L.List Config) -> L.List Config
 runm2lconfig r = let RWSResult s a w = r in w
 
 type State = Int
