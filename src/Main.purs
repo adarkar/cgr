@@ -30,7 +30,7 @@ data Val =
 data Op =
     As { id :: String , val :: Val }
   | Call String (L.List Int)
-  | Ret Int
+  | Ret Expr
   | IOW String (L.List Int)
   | IOR String (L.List Int)
 
@@ -92,13 +92,13 @@ test_prog_main = ProgSeq $ L.fromFoldable
     ]
   , ProgOp $ As { id: "a", val: VE $ ECall "foo" $
       L.fromFoldable [EBinop PoAdd (EId "x") (EConst 1)] }
-  , ProgOp $ Ret 0
+  , ProgOp $ Ret $ EConst 0
   ]
 
 test_prog_foo :: ProgF
 test_prog_foo = ProgSeq $ L.fromFoldable
-  [ ProgOp $ As { id: "i", val: VI 19 }
-  , ProgOp $ Ret 5
+  [ ProgOp $ As { id: "i", val: VE $ EBinop PoAdd (EId "i") (EConst 6) }
+  , ProgOp $ Ret $ EBinop PoAdd (EId "i") (EConst 2)
   , ProgOp $ As { id: "i", val: VI 4 }
   ]
 
@@ -141,7 +141,7 @@ runm p k = case p of
         lift $ get >>= (tell <<< L.singleton)
         pure v
       Nothing -> pure 0 -- should be unreachable (func name not in prog)
-  ProgOp (Ret v) -> k v
+  ProgOp (Ret e) -> ceval e >>= k
   ProgSeq xs -> do
     F.for_ xs $ \x -> runm x k
     pure 0
