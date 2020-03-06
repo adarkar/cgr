@@ -112,6 +112,7 @@ test_prog_main = ProgSeq $ L.fromFoldable
   , ProgOp $ As { id: "a", val: ECall "foo" $
       L.fromFoldable [EBinop PoAdd (EId "x") (EConst $ VInt 1)] }
   , ProgOp $ Call "printf" $ L.fromFoldable $ map VInt [0,1,2]
+  , ProgOp $ As { id: "ar", val: EConst $ VArray $ map VInt [1,2,3,5,8] }
   , ProgOp $ Ret $ EConst $ VInt 0
   ]
 
