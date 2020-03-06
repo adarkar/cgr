@@ -12,8 +12,9 @@ import Data.Array as A
 import Data.Tuple as T
 -- import Data.Unfoldable
 import Data.Foldable as F
-import Control.Monad.RWS as RWS
-import Control.Monad.Cont as CC
+import Control.Monad.RWS (RWS, tell, ask, get, put, runRWS, RWSResult(..))
+import Control.Monad.Cont (ContT, callCC, runContT)
+import Control.Monad.Trans.Class (lift)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -55,13 +56,18 @@ type Frame = { name :: String, env :: Map.Map String Int }
 
 data Config = Config (NL.NonEmptyList Frame)
 
-ceval :: Expr -> Config -> Int
-ceval e (Config c) = case e of
-  EId id -> fromMaybe 0 $ Map.lookup id (NL.head c).env
-  EConst k -> k
-  EBinop op a b -> (primopBin op) (ceval a $ Config c) (ceval b $ Config c)
-  EUnop _ _ -> 0
-  ETernop _ _ _ -> 0
+ceval :: Expr -> RunM Int
+ceval e = case e of
+  EId id -> do
+    Config c <- lift get
+    pure $ fromMaybe 0 $ Map.lookup id (NL.head c).env
+  EConst k -> pure $ k
+  EBinop op a b -> do
+    av <- ceval a
+    bv <- ceval b
+    pure $ (primopBin op) av bv
+  EUnop _ _ -> pure 0
+  ETernop _ _ _ -> pure 0
 
 data ProgF =
     ProgOp Op
@@ -71,8 +77,6 @@ data ProgF =
   | ProgIfElse Expr ProgF ProgF
 
 type Prog = L.List { fname :: String, argns :: L.List String, code :: ProgF }
-
-type Run = { reset :: Config, run :: L.List (T.Tuple Op Config) }
 
 test_prog_main :: ProgF
 test_prog_main = ProgSeq $ L.fromFoldable
@@ -99,42 +103,42 @@ test_prog = L.fromFoldable
   , { fname: "foo", argns: L.fromFoldable ["i"], code: test_prog_foo }
   ]
 
-type RunM = CC.ContT Unit (RWS.RWS Prog (L.List Config) Config) Unit
+type RunM a = ContT Unit (RWS Prog (L.List Config) Config) a
 
-runm :: ProgF -> (Unit -> RunM) -> RunM
+runm :: ProgF -> (Unit -> RunM Unit) -> RunM Unit
 runm p k = case p of
-  ProgOp (As op) -> CC.lift $ do
-    Config c <- RWS.get
+  ProgOp (As op) -> do
+    Config c <- lift $ get
+    v <- case op.val of
+      VI i -> pure i
+      VE e -> ceval e
     let
-      v = case op.val of
-        VI i -> i
-        VE e -> ceval e (Config c)
       top = NL.head c
       rest = NL.tail c
       c2 = top { env = Map.insert op.id v top.env }
       y = Config $ NL.NonEmptyList $ NonEmpty c2 rest
-    RWS.tell $ L.singleton y
-    RWS.put y
+    lift $ tell $ L.singleton y
+    lift $ put y
   ProgOp (Call id args) -> do
-    prog <- CC.lift RWS.ask
+    prog <- lift ask
     let prog_fs = flip map prog $ \{fname: f, argns: as, code: c} -> T.Tuple f (T.Tuple as c)
     case T.lookup id prog_fs of
       Just (T.Tuple as f) -> do
-        Config c <- CC.lift RWS.get
+        Config c <- lift get
         let
           fr = { name: id, env: Map.fromFoldable $ L.zip as args }
           y = Config $ NL.NonEmptyList $ NonEmpty fr (NL.toList c)
-        CC.lift $ RWS.tell $ L.singleton y
-        CC.lift $ RWS.put y
-        CC.callCC $ runm f
-        CC.lift $ RWS.put $ Config c
-        CC.lift $ RWS.get >>= (RWS.tell <<< L.singleton)
+        lift $ tell $ L.singleton y
+        lift $ put y
+        callCC $ runm f
+        lift $ put $ Config c
+        lift $ get >>= (tell <<< L.singleton)
       Nothing -> pure unit
   ProgOp Ret -> k unit
   ProgSeq xs -> F.for_ xs $ \x -> runm x k
   ProgWhile e x -> do
-    (Config c) <- CC.lift RWS.get
-    case ceval e (Config c) of
+    b <- ceval e
+    case b of
       0 -> pure unit
       _ -> runm x k *> runm p k
   _ -> pure unit
@@ -142,13 +146,13 @@ runm p k = case p of
 test_reset :: Config
 test_reset = Config $ NL.singleton { name: "Bot", env: Map.empty }
 
-test_runm :: Prog -> RWS.RWSResult Config Unit (L.List Config)
+test_runm :: Prog -> RWSResult Config Unit (L.List Config)
 test_runm prog =
   let r = runm (ProgOp $ Call "main" L.Nil) pure
-  in RWS.runRWS (CC.runContT r pure) prog test_reset
+  in runRWS (runContT r pure) prog test_reset
 
-runm2lconfig :: RWS.RWSResult Config Unit (L.List Config) -> L.List Config
-runm2lconfig r = let RWS.RWSResult s a w = r in w
+runm2lconfig :: RWSResult Config Unit (L.List Config) -> L.List Config
+runm2lconfig r = let RWSResult s a w = r in w
 
 type State = Int
 
