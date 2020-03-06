@@ -23,12 +23,8 @@ import Halogen.HTML.Events as HE
 import Halogen.Aff as HA
 import Halogen.VDom.Driver (runUI)
 
-data Val =
-    VI Int
-  | VE Expr
-
 data Op =
-    As { id :: String , val :: Val }
+    As { id :: String , val :: Expr }
   | Call String (L.List Int)
   | Ret Expr
   | IOW String (L.List Int)
@@ -84,22 +80,22 @@ type Prog = L.List { fname :: String, argns :: L.List String, code :: ProgF }
 
 test_prog_main :: ProgF
 test_prog_main = ProgSeq $ L.fromFoldable
-  [ ProgOp $ As { id: "i", val: VI 0 }
-  , ProgOp $ As { id: "x", val: VI 0 }
+  [ ProgOp $ As { id: "i", val: EConst 0 }
+  , ProgOp $ As { id: "x", val: EConst 0 }
   , ProgWhile (EBinop PoLT (EId "i") (EConst 5)) $ ProgSeq $ L.fromFoldable
-    [ ProgOp $ As { id: "x", val: VE $ EBinop PoAdd (EId "x") (EId "i") }
-    , ProgOp $ As { id: "i", val: VE $ EBinop PoAdd (EId "i") (EConst 1) }
+    [ ProgOp $ As { id: "x", val: EBinop PoAdd (EId "x") (EId "i") }
+    , ProgOp $ As { id: "i", val: EBinop PoAdd (EId "i") (EConst 1) }
     ]
-  , ProgOp $ As { id: "a", val: VE $ ECall "foo" $
+  , ProgOp $ As { id: "a", val: ECall "foo" $
       L.fromFoldable [EBinop PoAdd (EId "x") (EConst 1)] }
   , ProgOp $ Ret $ EConst 0
   ]
 
 test_prog_foo :: ProgF
 test_prog_foo = ProgSeq $ L.fromFoldable
-  [ ProgOp $ As { id: "i", val: VE $ EBinop PoAdd (EId "i") (EConst 6) }
+  [ ProgOp $ As { id: "i", val: EBinop PoAdd (EId "i") (EConst 6) }
   , ProgOp $ Ret $ EBinop PoAdd (EId "i") (EConst 2)
-  , ProgOp $ As { id: "i", val: VI 4 }
+  , ProgOp $ As { id: "i", val: EConst 4 }
   ]
 
 test_prog :: Prog
@@ -114,9 +110,7 @@ runm :: ProgF -> (Int -> RunM Int) -> RunM Int
 runm p k = case p of
   ProgOp (As op) -> do
     Config c <- lift $ get
-    v <- case op.val of
-      VI i -> pure i
-      VE e -> ceval e
+    v <- ceval op.val
     let
       top = NL.head c
       rest = NL.tail c
