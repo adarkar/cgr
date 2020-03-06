@@ -13,7 +13,7 @@ import Data.Tuple as T
 -- import Data.Unfoldable
 import Data.Foldable as F
 import Data.Traversable (for)
-import Control.Monad.RWS (RWS, tell, ask, get, put, runRWS, RWSResult(..))
+import Control.Monad.RWS (RWS, tell, ask, get, gets, put, modify_, runRWS, RWSResult(..))
 import Control.Monad.Cont (ContT, callCC, runContT)
 import Control.Monad.Trans.Class (lift)
 import Halogen as H
@@ -66,14 +66,14 @@ data Expr =
   | EUnop PrimopUn Expr
   | ETernop Expr Expr Expr
 
-type Frame = { name :: String, env :: Map.Map String Val }
+type Frame = { name :: String, env :: Map.Map String Val, frid :: Int }
 
 data Config = Config (NL.NonEmptyList Frame)
 
 ceval :: Expr -> RunM Val
 ceval e = case e of
   EId id -> do
-    Config c <- lift get
+    Config c <- lift $ gets _.config
     pure $ fromMaybe VVoid $ Map.lookup id (NL.head c).env
   EConst k -> pure k
   ECall id args -> do
@@ -142,12 +142,14 @@ stdlib = L.fromFoldable
   [ { fname: "printf", argns: Argvar $ L.fromFoldable ["format"], code: stdlib_printf }
   ]
 
-type RunM a = ContT Unit (RWS Prog (L.List Config) Config) a
+type RunS = { config :: Config, nxfrid :: Int }
+
+type RunM a = ContT Unit (RWS Prog (L.List Config) RunS) a
 
 runm :: ProgF -> (Val -> RunM Val) -> RunM Val
 runm p k = case p of
   ProgOp (As op) -> do
-    Config c <- lift $ get
+    Config c <- lift $ gets _.config
     v <- ceval op.val
     let
       top = NL.head c
@@ -168,30 +170,30 @@ runm p k = case p of
       c2 = top { env = env' }
       y = Config $ NL.NonEmptyList $ NonEmpty c2 rest
     lift $ tell $ L.singleton y
-    lift $ put y
+    lift $ modify_ $ _{ config = y }
     pure v
   ProgOp (Call id args) -> do
     prog <- lift ask
     let prog_fs = flip map prog $ \{fname: f, argns: as, code: c} -> T.Tuple f (T.Tuple as c)
     case T.lookup id prog_fs of
       Just (T.Tuple as f) -> do
-        Config c <- lift get
+        { config: Config c, nxfrid: nxfrid } <- lift get
         let
           fr = case as of
-            Argdef as' -> { name: id, env: Map.fromFoldable $ L.zip as' args }
+            Argdef as' -> { name: id, env: Map.fromFoldable $ L.zip as' args, frid: nxfrid }
             Argvar as' ->
               let
                 env = Map.fromFoldable $ L.zip as' args
                 vargs = L.drop (L.length as') args
                 venv = Map.fromFoldable $ flip L.mapWithIndex vargs $ \i va ->
                   T.Tuple ("vararg-" <> show i) va
-              in { name: id, env: Map.union env venv }
+              in { name: id, env: Map.union env venv, frid: nxfrid }
           y = Config $ NL.NonEmptyList $ NonEmpty fr (NL.toList c)
         lift $ tell $ L.singleton y
-        lift $ put y
+        lift $ put { config: y, nxfrid: nxfrid + 1 }
         v <- callCC $ runm f
-        lift $ put $ Config c
-        lift $ get >>= (tell <<< L.singleton)
+        lift $ modify_ $ _{ config = Config c }
+        lift $ gets _.config >>= (tell <<< L.singleton)
         pure v
       Nothing -> pure VVoid -- should be unreachable (func name not in prog)
   ProgOp (Ret e) -> ceval e >>= k
@@ -206,14 +208,14 @@ runm p k = case p of
   _ -> pure VVoid
 
 test_reset :: Config
-test_reset = Config $ NL.singleton { name: "Bot", env: Map.empty }
+test_reset = Config $ NL.singleton { name: "Bot", env: Map.empty, frid: 0 }
 
-test_runm :: Prog -> RWSResult Config Unit (L.List Config)
+test_runm :: Prog -> RWSResult RunS Unit (L.List Config)
 test_runm prog =
   let r = runm (ProgOp $ Call "main" L.Nil) pure
-  in runRWS (runContT r (\_ -> pure unit)) (prog <> stdlib) test_reset
+  in runRWS (runContT r (\_ -> pure unit)) (prog <> stdlib) { config: test_reset, nxfrid: 1 }
 
-runm2lconfig :: RWSResult Config Unit (L.List Config) -> L.List Config
+runm2lconfig :: RWSResult RunS Unit (L.List Config) -> L.List Config
 runm2lconfig r = let RWSResult s a w = r in w
 
 type State = Int
@@ -254,7 +256,7 @@ myComp =
           ] <>
           (flip map (NL.toUnfoldable s) $ \fr ->
             HH.div_
-              [ HH.text $ "fr: " <> fr.name
+              [ HH.text $ "fr [" <> show fr.frid <> "]: " <> fr.name
               , HH.ul_ $ map f (Map.toUnfoldable fr.env)
               ]
           )
