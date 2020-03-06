@@ -27,7 +27,7 @@ data Op =
     As { id :: String , val :: Expr }
   | Call String (L.List Int)
   | Ret Expr
-  | IOW String (L.List Int)
+  | IOW
   | IOR String (L.List Int)
 
 data PrimopBin =
@@ -76,7 +76,11 @@ data ProgF =
   | ProgIf Expr ProgF
   | ProgIfElse Expr ProgF ProgF
 
-type Prog = L.List { fname :: String, argns :: L.List String, code :: ProgF }
+data Argdef =
+    Argdef (L.List String)
+  | Argvar (L.List String)
+
+type Prog = L.List { fname :: String, argns :: Argdef, code :: ProgF }
 
 test_prog_main :: ProgF
 test_prog_main = ProgSeq $ L.fromFoldable
@@ -88,6 +92,7 @@ test_prog_main = ProgSeq $ L.fromFoldable
     ]
   , ProgOp $ As { id: "a", val: ECall "foo" $
       L.fromFoldable [EBinop PoAdd (EId "x") (EConst 1)] }
+  , ProgOp $ Call "printf" $ L.fromFoldable [0,1,2]
   , ProgOp $ Ret $ EConst 0
   ]
 
@@ -100,8 +105,16 @@ test_prog_foo = ProgSeq $ L.fromFoldable
 
 test_prog :: Prog
 test_prog = L.fromFoldable
-  [ { fname: "main", argns: L.Nil, code: test_prog_main }
-  , { fname: "foo", argns: L.fromFoldable ["i"], code: test_prog_foo }
+  [ { fname: "main", argns: Argdef L.Nil, code: test_prog_main }
+  , { fname: "foo", argns: Argdef $ L.fromFoldable ["i"], code: test_prog_foo }
+  ]
+
+stdlib_printf :: ProgF
+stdlib_printf = ProgOp IOW
+
+stdlib :: Prog
+stdlib = L.fromFoldable
+  [ { fname: "printf", argns: Argvar $ L.fromFoldable ["format"] , code: stdlib_printf }
   ]
 
 type RunM a = ContT Int (RWS Prog (L.List Config) Config) a
@@ -126,7 +139,15 @@ runm p k = case p of
       Just (T.Tuple as f) -> do
         Config c <- lift get
         let
-          fr = { name: id, env: Map.fromFoldable $ L.zip as args }
+          fr = case as of
+            Argdef as' -> { name: id, env: Map.fromFoldable $ L.zip as' args }
+            Argvar as' ->
+              let
+                env = Map.fromFoldable $ L.zip as' args
+                vargs = L.drop (L.length as') args
+                venv = Map.fromFoldable $ flip L.mapWithIndex vargs $ \i va ->
+                  T.Tuple ("vararg-" <> show i) va
+              in { name: id, env: Map.union env venv }
           y = Config $ NL.NonEmptyList $ NonEmpty fr (NL.toList c)
         lift $ tell $ L.singleton y
         lift $ put y
@@ -152,7 +173,7 @@ test_reset = Config $ NL.singleton { name: "Bot", env: Map.empty }
 test_runm :: Prog -> RWSResult Config Int (L.List Config)
 test_runm prog =
   let r = runm (ProgOp $ Call "main" L.Nil) pure
-  in runRWS (runContT r pure) prog test_reset
+  in runRWS (runContT r pure) (prog <> stdlib) test_reset
 
 runm2lconfig :: RWSResult Config Int (L.List Config) -> L.List Config
 runm2lconfig r = let RWSResult s a w = r in w
