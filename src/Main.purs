@@ -36,8 +36,12 @@ instance showVal :: Show Val where
   show (VArray x) = show x
   show _ = "todo"
 
+data LVal =
+   LVId String
+ | LVSubscr String Expr
+
 data Op =
-    As { id :: String , val :: Expr }
+    As { lv :: LVal, val :: Expr }
   | Call String (L.List Val)
   | Ret Expr
   | IOW
@@ -103,24 +107,25 @@ type Prog = L.List { fname :: String, argns :: Argdef, code :: ProgF }
 
 test_prog_main :: ProgF
 test_prog_main = ProgSeq $ L.fromFoldable
-  [ ProgOp $ As { id: "i", val: EConst $ VInt 0 }
-  , ProgOp $ As { id: "x", val: EConst $ VInt 0 }
+  [ ProgOp $ As { lv: LVId "i", val: EConst $ VInt 0 }
+  , ProgOp $ As { lv: LVId "x", val: EConst $ VInt 0 }
   , ProgWhile (EBinop PoLT (EId "i") (EConst $ VInt 5)) $ ProgSeq $ L.fromFoldable
-    [ ProgOp $ As { id: "x", val: EBinop PoAdd (EId "x") (EId "i") }
-    , ProgOp $ As { id: "i", val: EBinop PoAdd (EId "i") (EConst $ VInt 1) }
+    [ ProgOp $ As { lv: LVId "x", val: EBinop PoAdd (EId "x") (EId "i") }
+    , ProgOp $ As { lv: LVId "i", val: EBinop PoAdd (EId "i") (EConst $ VInt 1) }
     ]
-  , ProgOp $ As { id: "a", val: ECall "foo" $
+  , ProgOp $ As { lv: LVId "a", val: ECall "foo" $
       L.fromFoldable [EBinop PoAdd (EId "x") (EConst $ VInt 1)] }
   , ProgOp $ Call "printf" $ L.fromFoldable $ map VInt [0,1,2]
-  , ProgOp $ As { id: "ar", val: EConst $ VArray $ map VInt [1,2,3,5,8] }
+  , ProgOp $ As { lv: LVId "ar", val: EConst $ VArray $ map VInt [1,2,3,5,8] }
+  , ProgOp $ As { lv: LVSubscr "ar" (EConst $ VInt 1), val: EConst $ VInt 0 }
   , ProgOp $ Ret $ EConst $ VInt 0
   ]
 
 test_prog_foo :: ProgF
 test_prog_foo = ProgSeq $ L.fromFoldable
-  [ ProgOp $ As { id: "i", val: EBinop PoAdd (EId "i") (EConst $ VInt 6) }
+  [ ProgOp $ As { lv: LVId "i", val: EBinop PoAdd (EId "i") (EConst $ VInt 6) }
   , ProgOp $ Ret $ EBinop PoAdd (EId "i") (EConst $ VInt 2)
-  , ProgOp $ As { id: "i", val: EConst $ VInt 4 }
+  , ProgOp $ As { lv: LVId "i", val: EConst $ VInt 4 }
   ]
 
 test_prog :: Prog
@@ -147,7 +152,20 @@ runm p k = case p of
     let
       top = NL.head c
       rest = NL.tail c
-      c2 = top { env = Map.insert op.id v top.env }
+    env' <- case op.lv of
+      LVId id -> pure $ Map.insert id v top.env
+      LVSubscr id ix -> do
+        ixv <- ceval ix
+        case ixv of
+          VInt ixvi ->
+            pure $ Map.update up id top.env
+            where
+              up ary = case ary of
+                VArray ary' -> VArray <$> A.updateAt ixvi v ary'
+                _ -> Nothing
+          _ -> pure top.env
+    let
+      c2 = top { env = env' }
       y = Config $ NL.NonEmptyList $ NonEmpty c2 rest
     lift $ tell $ L.singleton y
     lift $ put y
