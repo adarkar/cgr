@@ -33,6 +33,7 @@ data Val =
 instance showVal :: Show Val where
   show VVoid = "void"
   show (VInt x) = show x
+  show (VArray x) = show x
   show _ = "todo"
 
 data Op =
