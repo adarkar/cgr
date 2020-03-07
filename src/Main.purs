@@ -14,6 +14,7 @@ import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Array ((!!), updateAt)
 import Data.Array as A
+import Data.Char (toCharCode)
 import Data.String.CodeUnits (fromCharArray)
 import Data.Tuple (Tuple(..), lookup)
 -- import Data.Unfoldable
@@ -271,15 +272,28 @@ parse input = case runParser input prog of
       _ <- tkc '{'
       stmts <- manyRec stmt
       _ <- tkc '}'
-      pure $ { fname: fname, argns: Argdef args, code: ProgOp IOW }
+      pure $ { fname: fname, argns: Argdef args, code: ProgSeq stmts }
 
-    stmt :: Parser String Unit
-    stmt = do
+    number :: Parser String Int
+    number = do
+      xs <- map ((\x -> x-0x30) <<< toCharCode) <$> someRec PT.digit
+      pure $ conv xs 0
+      where
+      conv Nil n = n
+      conv (x:xs) n = conv xs (10*n + x)
+
+    assign :: Parser String ProgF
+    assign = do
       id <- ident
       _ <- tkc '='
-      _ <- someRec PT.digit
+      num <- number
+      pure $ ProgOp $ As { loc: EId id, val: EConst $ VInt num }
+
+    stmt :: Parser String ProgF
+    stmt = do
+      as <- assign
       _ <- tkc ';'
-      pure unit
+      pure as
 
     type_name :: Parser String String
     type_name = do
@@ -291,6 +305,7 @@ parse input = case runParser input prog of
 test_string :: String
 test_string = """
 int main(foo, bar) {
+  x = 0;
 }
 """
 
