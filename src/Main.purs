@@ -113,7 +113,7 @@ ceval e = case e of
 leval :: Expr -> RunM LVal
 leval e = case e of
   EId id -> do
-    Config c <- lift $ gets _.config
+    Config c <- gets _.config
     case head c of
       Just fr -> pure $ LVAtom fr.frid id
       Nothing -> throwError "unreachable: no frames existing"
@@ -132,7 +132,7 @@ frameput frid fr' = do
     Nil -> throwError "frame not found"
     fr : below -> do
       let y = Config $ frin <> singleton fr' <> below
-      lift <<< lift $ tell $ singleton y
+      trace y
       modify_ $ _{ config = y }
 
 frameget :: Int -> RunM Frame
@@ -236,7 +236,21 @@ stdlib = fromFoldable
 
 type RunS = { config :: Config, nxfrid :: Int }
 
-type RunM a = ExceptT String (ContT Unit (RWS Prog (List Config) RunS)) a
+data RunW = RunW (List Config) String
+
+instance monoidRunW :: Monoid RunW where
+  mempty = RunW Nil ""
+
+instance semigroupRunW :: Semigroup RunW where
+  append (RunW tr1 out1) (RunW tr2 out2) = RunW (tr1 <> tr2) (out1 <> out2)
+
+trace :: Config -> RunM Unit
+trace c = lift <<< lift $ tell $ RunW (singleton c) ""
+
+output :: String -> RunM Unit
+output s = lift <<< lift $ tell $ RunW Nil s
+
+type RunM a = ExceptT String (ContT Unit (RWS Prog RunW RunS)) a
 
 runm :: ProgF -> (Val -> RunM Val) -> RunM Val
 runm p k = case p of
@@ -251,7 +265,7 @@ runm p k = case p of
     argsval <- for args ceval
     case lookup id prog_fs of
       Just (Tuple as f) -> do
-        { config: Config c, nxfrid: nxfrid } <- lift get
+        { config: Config c, nxfrid: nxfrid } <- get
         let
           fr = case as of
             Argdef as' -> { name: id, env: Map.fromFoldable $ zip as' argsval, frid: nxfrid }
@@ -263,7 +277,7 @@ runm p k = case p of
                   Tuple ("vararg-" <> show i) va
               in { name: id, env: Map.union env venv, frid: nxfrid }
           y = Config $ fr : c
-        lift <<< lift $ tell $ singleton y
+        trace y
         put { config: y, nxfrid: nxfrid + 1 }
         v <- callCC $ runm f
         modify_ $ \s ->
@@ -274,10 +288,11 @@ runm p k = case p of
               Nothing -> Nil
           in
             s { config = c'' }
-        gets _.config >>= ((lift <<< lift <<< tell) <<< singleton)
+        gets _.config >>= trace
         pure v
       Nothing -> pure VVoid -- should be unreachable (func name not in prog)
   ProgOp (Ret e) -> ceval e >>= k
+  ProgOp IOW -> output "ciao" *> pure VVoid
   ProgSeq xs -> do
     for_ xs $ \x -> runm x k
     pure VVoid
@@ -291,12 +306,15 @@ runm p k = case p of
 test_reset :: Config
 test_reset = Config Nil
 
-test_runm :: Prog -> RWSResult RunS Unit (List Config)
+test_runm :: Prog -> RWSResult RunS Unit RunW
 test_runm prog =
   let r = runExceptT $ runm (ProgOp $ Call "main" Nil) pure
-  in runRWS (runContT r (\_ -> pure unit)) (prog <> stdlib) { config: test_reset, nxfrid: 0 }
+  in runRWS
+    (runContT r (\_ -> pure unit))
+    (prog <> stdlib)
+    { config: test_reset, nxfrid: 0 }
 
-runm2lconfig :: RWSResult RunS Unit (List Config) -> List Config
+runm2lconfig :: RWSResult RunS Unit RunW -> RunW
 runm2lconfig r = let RWSResult s a w = r in w
 
 type State = Int
@@ -324,14 +342,15 @@ myComp =
 
   render :: State -> H.ComponentHTML Query
   render state =
-    let cs = runm2lconfig $ test_runm test_prog
+    let (RunW tr out) = runm2lconfig $ test_runm test_prog
     in
     HH.div_ $
       [ HH.button [ HE.onClick (HE.input_ $ Step (-1)) ] [ HH.text "<" ]
       , HH.text $ " " <> show state <> " "
       , HH.button [ HE.onClick (HE.input_ $ Step 1) ] [ HH.text ">" ]
+      , HH.div_ [ HH.text $ "Out: " <> out ]
       ] <>
-      (flip A.mapWithIndex (toUnfoldable cs) $ \i (Config s) ->
+      (flip A.mapWithIndex (toUnfoldable tr) $ \i (Config s) ->
         HH.div_ $
           [ HH.text $ "t: " <> show i
           ] <>
@@ -360,7 +379,6 @@ myComp =
 main :: Effect Unit
 main = do
   log "Hello 🍝!"
-  log <<< show $ length $ runm2lconfig $ test_runm test_prog
   HA.runHalogenAff do
     body <- HA.awaitBody
     runUI myComp unit body
