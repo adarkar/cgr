@@ -8,23 +8,28 @@ import Effect.Console (log)
 import Data.Maybe (Maybe(..))
 import Data.List
   ( List(..), (:), span, singleton, find, zip, fromFoldable, drop
-  , length, mapWithIndex, toUnfoldable, head, tail)
+  , length, mapWithIndex, toUnfoldable, head, tail
+  , manyRec, someRec)
 import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Array ((!!), updateAt)
 import Data.Array as A
+import Data.String.CodeUnits (fromCharArray)
 import Data.Tuple (Tuple(..), lookup)
 -- import Data.Unfoldable
 import Data.Foldable (for_)
 import Data.Traversable (for)
 
+import Control.Alt ((<|>))
 import Control.Monad.RWS (RWS, tell, ask, get, gets, put, modify_, runRWS, RWSResult(..))
 import Control.Monad.Cont (ContT, callCC, runContT)
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.Trans.Class (lift)
 
-import Text.Parsing.Parser (runParser)
+import Text.Parsing.Parser (Parser, runParser)
 import Text.Parsing.Parser.String as PS
+import Text.Parsing.Parser.Combinators as PC
+import Text.Parsing.Parser.Token as PT
 
 import Halogen as H
 import Halogen.HTML as HH
@@ -239,14 +244,55 @@ stdlib = fromFoldable
   ]
 
 parse :: String -> Prog
-parse input = case runParser input p of
+parse input = case runParser input prog of
   Left _ -> Nil
   Right x -> x
   where
-    p = PS.string "ciao" *> pure Nil
+    prog :: Parser String Prog
+    prog = someRec func
+
+    ident :: Parser String String
+    ident = do
+      f <- PT.letter <|> PS.char '_'
+      r <- manyRec PT.alphaNum
+      PS.skipSpaces
+      pure $ fromCharArray [f] <> fromCharArray (toUnfoldable r)
+
+    tkc :: Char -> Parser String Char
+    tkc c = PS.char c <* PS.skipSpaces
+
+    func :: Parser String { fname :: String, argns :: Argdef, code :: ProgF }
+    func = do
+      _ <- PS.skipSpaces *> type_name *> PC.skipMany1 PT.space
+      fname <- ident
+      _ <- tkc '('
+      args <- PC.sepBy ident (tkc ',')
+      _ <- tkc ')'
+      _ <- tkc '{'
+      stmts <- manyRec stmt
+      _ <- tkc '}'
+      pure $ { fname: fname, argns: Argdef args, code: ProgOp IOW }
+
+    stmt :: Parser String Unit
+    stmt = do
+      id <- ident
+      _ <- tkc '='
+      _ <- someRec PT.digit
+      _ <- tkc ';'
+      pure unit
+
+    type_name :: Parser String String
+    type_name = do
+      PC.choice $
+        [ PS.string "int"
+        , PS.string "void"
+        ]
 
 test_string :: String
-test_string = "ciao"
+test_string = """
+int main(foo, bar) {
+}
+"""
 
 test_prog_parsed :: Prog
 test_prog_parsed = parse test_string
