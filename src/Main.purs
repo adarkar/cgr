@@ -9,6 +9,7 @@ import Data.Maybe (Maybe(..))
 import Data.List
   ( List(..), (:), span, singleton, find, zip, fromFoldable, drop
   , length, mapWithIndex, toUnfoldable, head, tail)
+import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Array ((!!), updateAt)
 import Data.Array as A
@@ -21,6 +22,9 @@ import Control.Monad.RWS (RWS, tell, ask, get, gets, put, modify_, runRWS, RWSRe
 import Control.Monad.Cont (ContT, callCC, runContT)
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.Trans.Class (lift)
+
+import Text.Parsing.Parser (runParser)
+import Text.Parsing.Parser.String as PS
 
 import Halogen as H
 import Halogen.HTML as HH
@@ -234,6 +238,19 @@ stdlib = fromFoldable
   [ { fname: "printf", argns: Argvar $ fromFoldable ["format"], code: stdlib_printf }
   ]
 
+parse :: String -> Prog
+parse input = case runParser input p of
+  Left _ -> Nil
+  Right x -> x
+  where
+    p = PS.string "ciao" *> pure Nil
+
+test_string :: String
+test_string = "ciao"
+
+test_prog_parsed :: Prog
+test_prog_parsed = parse test_string
+
 type RunS = { config :: Config, nxfrid :: Int }
 
 data RunW = RunW (List Config) String
@@ -342,7 +359,7 @@ myComp =
 
   render :: State -> H.ComponentHTML Query
   render state =
-    let (RunW tr out) = runm2lconfig $ test_runm test_prog
+    let (RunW tr out) = runm2lconfig $ test_runm test_prog_parsed
     in
     HH.div_ $
       [ HH.button [ HE.onClick (HE.input_ $ Step (-1)) ] [ HH.text "<" ]
