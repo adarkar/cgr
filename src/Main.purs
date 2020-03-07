@@ -1,21 +1,27 @@
 module Main where
 
 import Prelude
+
 import Effect (Effect)
 import Effect.Console (log)
-import Data.Maybe (fromMaybe, Maybe(..))
-import Data.List as L
-import Data.List.NonEmpty as NL
-import Data.NonEmpty (NonEmpty(..))
+
+import Data.Maybe (Maybe(..))
+import Data.List
+  ( List(..), (:), span, singleton, find, zip, fromFoldable, drop
+  , length, mapWithIndex, toUnfoldable, head, tail)
 import Data.Map as Map
+import Data.Array ((!!), updateAt)
 import Data.Array as A
-import Data.Tuple as T
+import Data.Tuple (Tuple(..), lookup)
 -- import Data.Unfoldable
-import Data.Foldable as F
+import Data.Foldable (for_)
 import Data.Traversable (for)
+
 import Control.Monad.RWS (RWS, tell, ask, get, gets, put, modify_, runRWS, RWSResult(..))
 import Control.Monad.Cont (ContT, callCC, runContT)
+import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.Trans.Class (lift)
+
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -28,24 +34,29 @@ data Val =
   | VInt Int
   | VFloat Number
   | VArray (Array Val)
-  | VRef Int String -- to a frame: int fr index, string var name
+  | VRef LVal
 
 instance showVal :: Show Val where
   show VVoid = "void"
   show (VInt x) = show x
   show (VArray x) = show x
+  show (VRef lv) = show lv
   show _ = "todo"
 
 data LVal =
-   LVId String
- | LVSubscr String Expr
+   LVAtom Int String
+ | LVAryEl Int String Int
+
+instance showLVal :: Show LVal where
+  show (LVAtom frid id) = "[ref(fr:" <> show frid <> ") " <> id <> "]"
+  show (LVAryEl frid id ix) = "[ref(fr:" <> show frid <> ") " <> id <> "[" <> show ix <> "]"
 
 data Op =
-    As { lv :: LVal, val :: Expr }
-  | Call String (L.List Val)
+    As { loc :: Expr, val :: Expr }
+  | Call String (List Expr)
   | Ret Expr
   | IOW
-  | IOR String (L.List Int)
+  | IOR String (List Int)
 
 data PrimopBin =
  PoAdd | PoMul | PoLT
@@ -61,24 +72,31 @@ primopBin op = case op of
 data Expr =
     EId String
   | EConst Val
-  | ECall String (L.List Expr)
+  | ESubscr Expr Expr
+  | ECall String (List Expr)
   | EBinop PrimopBin Expr Expr
   | EUnop PrimopUn Expr
   | ETernop Expr Expr Expr
 
-type Frame = { name :: String, env :: Map.Map String Val, frid :: Int }
+instance showExpr :: Show Expr where
+  show (EId id) = show id
+  show (EConst v) = show v
+  show _ = "todo"
 
-data Config = Config (NL.NonEmptyList Frame)
+type Frame =
+  { name :: String
+  , env :: Map.Map String Val
+  , frid :: Int
+  }
+
+data Config = Config (List Frame)
 
 ceval :: Expr -> RunM Val
 ceval e = case e of
-  EId id -> do
-    Config c <- lift $ gets _.config
-    pure $ fromMaybe VVoid $ Map.lookup id (NL.head c).env
+  EId id -> leval e >>= readlval
   EConst k -> pure k
-  ECall id args -> do
-    avs <- for args ceval
-    runm (ProgOp $ Call id avs) pure
+  ESubscr ar ix -> leval e >>= readlval
+  ECall id args -> runm (ProgOp $ Call id args) pure
   EBinop op a b -> do
     av <- ceval a
     bv <- ceval b
@@ -92,113 +110,176 @@ ceval e = case e of
   EUnop _ _ -> pure VVoid
   ETernop _ _ _ -> pure VVoid
 
+leval :: Expr -> RunM LVal
+leval e = case e of
+  EId id -> do
+    Config c <- lift $ gets _.config
+    case head c of
+      Just fr -> pure $ LVAtom fr.frid id
+      Nothing -> throwError "unreachable: no frames existing"
+  ESubscr ar ix -> ceval ar >>= case _ of
+    VRef (LVAtom frid id) -> ceval ix >>= case _ of
+      VInt ixvi -> pure $ LVAryEl frid id ixvi
+      _ -> throwError "index must be int in subscript expression"
+    _ -> throwError "name must refer to array in subscript expression"
+  _ -> throwError "leval not defined"
+
+frameput :: Int -> Frame -> RunM Unit
+frameput frid fr' = do
+  Config c <- gets _.config
+  let { init: frin, rest: frrs } = span (\fr -> fr.frid /= frid) c
+  case frrs of
+    Nil -> throwError "frame not found"
+    fr : below -> do
+      let y = Config $ frin <> singleton fr' <> below
+      lift <<< lift $ tell $ singleton y
+      modify_ $ _{ config = y }
+
+frameget :: Int -> RunM Frame
+frameget frid = do
+  Config c <- gets _.config
+  case flip find c (\fr -> fr.frid == frid) of
+    Just x -> pure x
+    Nothing -> throwError "frame not found"
+
+readlval :: LVal -> RunM Val
+readlval lv = case lv of
+  LVAtom frid id -> do
+    fr <- frameget frid
+    case Map.lookup id fr.env of
+      Just (VArray _) -> pure $ VRef lv
+      Just v -> pure v
+      Nothing -> throwError "var name not found in frame"
+  LVAryEl frid id ix -> do
+    fr <- frameget frid
+    case Map.lookup id fr.env of
+      Just (VArray ar) -> case ar !! ix of
+        Just v -> pure v
+        Nothing -> throwError "index out of bounds"
+      Just _ -> throwError "can't index non array value"
+      Nothing -> throwError "var name not found in frame"
+
+writelval :: LVal -> Val -> RunM Unit
+writelval lv v = case lv of
+  LVAtom frid id -> do
+    fr <- frameget frid
+    let env' = Map.insert id v fr.env
+    frameput frid $ fr { env = env' }
+  LVAryEl frid id ix -> do
+    fr <- frameget frid
+    let env' = Map.update up id fr.env
+    frameput frid $ fr { env = env' }
+    where
+      up ary = case ary of
+        VArray ary' -> VArray <$> updateAt ix v ary'
+        _ -> Nothing
+
 data ProgF =
     ProgOp Op
-  | ProgSeq (L.List ProgF)
+  | ProgSeq (List ProgF)
   | ProgWhile Expr ProgF
   | ProgIf Expr ProgF
   | ProgIfElse Expr ProgF ProgF
 
 data Argdef =
-    Argdef (L.List String)
-  | Argvar (L.List String)
+    Argdef (List String)
+  | Argvar (List String)
 
-type Prog = L.List { fname :: String, argns :: Argdef, code :: ProgF }
+type Prog = List { fname :: String, argns :: Argdef, code :: ProgF }
 
 test_prog_main :: ProgF
-test_prog_main = ProgSeq $ L.fromFoldable
-  [ ProgOp $ As { lv: LVId "i", val: EConst $ VInt 0 }
-  , ProgOp $ As { lv: LVId "x", val: EConst $ VInt 0 }
-  , ProgWhile (EBinop PoLT (EId "i") (EConst $ VInt 5)) $ ProgSeq $ L.fromFoldable
-    [ ProgOp $ As { lv: LVId "x", val: EBinop PoAdd (EId "x") (EId "i") }
-    , ProgOp $ As { lv: LVId "i", val: EBinop PoAdd (EId "i") (EConst $ VInt 1) }
+test_prog_main = ProgSeq $ fromFoldable
+  [ ProgOp $ As { loc: EId "i", val: EConst $ VInt 0 }
+  , ProgOp $ As { loc: EId "x", val: EConst $ VInt 0 }
+  , ProgWhile (EBinop PoLT (EId "i") (EConst $ VInt 5)) $ ProgSeq $ fromFoldable
+    [ ProgOp $ As { loc: EId "x", val: EBinop PoAdd (EId "x") (EId "i") }
+    , ProgOp $ As { loc: EId "i", val: EBinop PoAdd (EId "i") (EConst $ VInt 1) }
     ]
-  , ProgOp $ As { lv: LVId "a", val: ECall "foo" $
-      L.fromFoldable [EBinop PoAdd (EId "x") (EConst $ VInt 1)] }
-  , ProgOp $ Call "printf" $ L.fromFoldable $ map VInt [0,1,2]
-  , ProgOp $ As { lv: LVId "ar", val: EConst $ VArray $ map VInt [1,2,3,5,8] }
-  , ProgOp $ As { lv: LVSubscr "ar" (EConst $ VInt 1), val: EConst $ VInt 0 }
+  , ProgOp $ As { loc: EId "a", val: ECall "foo" $
+      fromFoldable [EBinop PoAdd (EId "x") (EConst $ VInt 1)] }
+  , ProgOp $ Call "printf" $ fromFoldable $ map (EConst <<< VInt) [0,1,2]
+  , ProgOp $ As { loc: EId "ar", val: EConst $ VArray $ map VInt [0,0,0,0,0,0] }
+  , ProgOp $ Call "fib" $ fromFoldable [EId "ar", EConst $ VInt 6]
   , ProgOp $ Ret $ EConst $ VInt 0
   ]
 
 test_prog_foo :: ProgF
-test_prog_foo = ProgSeq $ L.fromFoldable
-  [ ProgOp $ As { lv: LVId "i", val: EBinop PoAdd (EId "i") (EConst $ VInt 6) }
+test_prog_foo = ProgSeq $ fromFoldable
+  [ ProgOp $ As { loc: EId "i", val: EBinop PoAdd (EId "i") (EConst $ VInt 6) }
   , ProgOp $ Ret $ EBinop PoAdd (EId "i") (EConst $ VInt 2)
-  , ProgOp $ As { lv: LVId "i", val: EConst $ VInt 4 }
+  , ProgOp $ As { loc: EId "i", val: EConst $ VInt 4 }
+  ]
+
+test_prog_fib :: ProgF
+test_prog_fib = ProgSeq $ fromFoldable
+  [ ProgOp $ As { loc: EId "i", val: EConst $ VInt 0 }
+  , ProgWhile (EBinop PoLT (EId "i") (EId "len")) $ ProgSeq $ fromFoldable
+    [ ProgOp $ As { loc: ESubscr (EId "a") (EId "i"), val: EId "i" }
+    , ProgOp $ As { loc: EId "i", val: EBinop PoAdd (EId "i") (EConst $ VInt 1) }
+    ]
   ]
 
 test_prog :: Prog
-test_prog = L.fromFoldable
-  [ { fname: "main", argns: Argdef L.Nil, code: test_prog_main }
-  , { fname: "foo", argns: Argdef $ L.fromFoldable ["i"], code: test_prog_foo }
+test_prog = fromFoldable
+  [ { fname: "main", argns: Argdef Nil, code: test_prog_main }
+  , { fname: "foo", argns: Argdef $ fromFoldable ["i"], code: test_prog_foo }
+  , { fname: "fib", argns: Argdef $ fromFoldable ["a", "len"], code: test_prog_fib }
   ]
 
 stdlib_printf :: ProgF
 stdlib_printf = ProgOp IOW
 
 stdlib :: Prog
-stdlib = L.fromFoldable
-  [ { fname: "printf", argns: Argvar $ L.fromFoldable ["format"], code: stdlib_printf }
+stdlib = fromFoldable
+  [ { fname: "printf", argns: Argvar $ fromFoldable ["format"], code: stdlib_printf }
   ]
 
 type RunS = { config :: Config, nxfrid :: Int }
 
-type RunM a = ContT Unit (RWS Prog (L.List Config) RunS) a
+type RunM a = ExceptT String (ContT Unit (RWS Prog (List Config) RunS)) a
 
 runm :: ProgF -> (Val -> RunM Val) -> RunM Val
 runm p k = case p of
   ProgOp (As op) -> do
-    Config c <- lift $ gets _.config
+    lv <- leval op.loc
     v <- ceval op.val
-    let
-      top = NL.head c
-      rest = NL.tail c
-    env' <- case op.lv of
-      LVId id -> pure $ Map.insert id v top.env
-      LVSubscr id ix -> do
-        ixv <- ceval ix
-        case ixv of
-          VInt ixvi ->
-            pure $ Map.update up id top.env
-            where
-              up ary = case ary of
-                VArray ary' -> VArray <$> A.updateAt ixvi v ary'
-                _ -> Nothing
-          _ -> pure top.env
-    let
-      c2 = top { env = env' }
-      y = Config $ NL.NonEmptyList $ NonEmpty c2 rest
-    lift $ tell $ L.singleton y
-    lift $ modify_ $ _{ config = y }
+    writelval lv v
     pure v
   ProgOp (Call id args) -> do
-    prog <- lift ask
-    let prog_fs = flip map prog $ \{fname: f, argns: as, code: c} -> T.Tuple f (T.Tuple as c)
-    case T.lookup id prog_fs of
-      Just (T.Tuple as f) -> do
+    prog <- ask
+    let prog_fs = flip map prog $ \{fname: f, argns: as, code: c} -> Tuple f (Tuple as c)
+    argsval <- for args ceval
+    case lookup id prog_fs of
+      Just (Tuple as f) -> do
         { config: Config c, nxfrid: nxfrid } <- lift get
         let
           fr = case as of
-            Argdef as' -> { name: id, env: Map.fromFoldable $ L.zip as' args, frid: nxfrid }
+            Argdef as' -> { name: id, env: Map.fromFoldable $ zip as' argsval, frid: nxfrid }
             Argvar as' ->
               let
-                env = Map.fromFoldable $ L.zip as' args
-                vargs = L.drop (L.length as') args
-                venv = Map.fromFoldable $ flip L.mapWithIndex vargs $ \i va ->
-                  T.Tuple ("vararg-" <> show i) va
+                env = Map.fromFoldable $ zip as' argsval
+                vargs = drop (length as') argsval
+                venv = Map.fromFoldable $ flip mapWithIndex vargs $ \i va ->
+                  Tuple ("vararg-" <> show i) va
               in { name: id, env: Map.union env venv, frid: nxfrid }
-          y = Config $ NL.NonEmptyList $ NonEmpty fr (NL.toList c)
-        lift $ tell $ L.singleton y
-        lift $ put { config: y, nxfrid: nxfrid + 1 }
+          y = Config $ fr : c
+        lift <<< lift $ tell $ singleton y
+        put { config: y, nxfrid: nxfrid + 1 }
         v <- callCC $ runm f
-        lift $ modify_ $ _{ config = Config c }
-        lift $ gets _.config >>= (tell <<< L.singleton)
+        modify_ $ \s ->
+          let
+            Config c' = s.config
+            c'' = Config $ case tail c' of
+              Just x -> x
+              Nothing -> Nil
+          in
+            s { config = c'' }
+        gets _.config >>= ((lift <<< lift <<< tell) <<< singleton)
         pure v
       Nothing -> pure VVoid -- should be unreachable (func name not in prog)
   ProgOp (Ret e) -> ceval e >>= k
   ProgSeq xs -> do
-    F.for_ xs $ \x -> runm x k
+    for_ xs $ \x -> runm x k
     pure VVoid
   ProgWhile e x -> do
     b <- ceval e
@@ -208,14 +289,14 @@ runm p k = case p of
   _ -> pure VVoid
 
 test_reset :: Config
-test_reset = Config $ NL.singleton { name: "Bot", env: Map.empty, frid: 0 }
+test_reset = Config Nil
 
-test_runm :: Prog -> RWSResult RunS Unit (L.List Config)
+test_runm :: Prog -> RWSResult RunS Unit (List Config)
 test_runm prog =
-  let r = runm (ProgOp $ Call "main" L.Nil) pure
-  in runRWS (runContT r (\_ -> pure unit)) (prog <> stdlib) { config: test_reset, nxfrid: 1 }
+  let r = runExceptT $ runm (ProgOp $ Call "main" Nil) pure
+  in runRWS (runContT r (\_ -> pure unit)) (prog <> stdlib) { config: test_reset, nxfrid: 0 }
 
-runm2lconfig :: RWSResult RunS Unit (L.List Config) -> L.List Config
+runm2lconfig :: RWSResult RunS Unit (List Config) -> List Config
 runm2lconfig r = let RWSResult s a w = r in w
 
 type State = Int
@@ -250,11 +331,11 @@ myComp =
       , HH.text $ " " <> show state <> " "
       , HH.button [ HE.onClick (HE.input_ $ Step 1) ] [ HH.text ">" ]
       ] <>
-      (flip A.mapWithIndex (L.toUnfoldable cs) $ \i (Config s) ->
+      (flip A.mapWithIndex (toUnfoldable cs) $ \i (Config s) ->
         HH.div_ $
           [ HH.text $ "t: " <> show i
           ] <>
-          (flip map (NL.toUnfoldable s) $ \fr ->
+          (flip map (toUnfoldable s) $ \fr ->
             HH.div_
               [ HH.text $ "fr [" <> show fr.frid <> "]: " <> fr.name
               , HH.ul_ $ map f (Map.toUnfoldable fr.env)
@@ -262,7 +343,7 @@ myComp =
           )
       )
     where
-    f (T.Tuple k v) = HH.li_ [ HH.text $ k <> ": " <> show v ]
+    f (Tuple k v) = HH.li_ [ HH.text $ k <> ": " <> show v ]
 
   eval :: Query ~> H.ComponentDSL State Query Message m
   eval = case _ of
@@ -279,7 +360,7 @@ myComp =
 main :: Effect Unit
 main = do
   log "Hello 🍝!"
-  log <<< show $ L.length $ runm2lconfig $ test_runm test_prog
+  log <<< show $ length $ runm2lconfig $ test_runm test_prog
   HA.runHalogenAff do
     body <- HA.awaitBody
     runUI myComp unit body
