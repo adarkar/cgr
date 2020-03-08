@@ -319,13 +319,28 @@ parse input = case runParser input prog of
         PE.buildExprParser
           [ [ PE.Infix (tkc '*' $> EBinop PoMul) PE.AssocRight ]
           , [ PE.Infix (tkc '+' $> EBinop PoAdd) PE.AssocRight ]
+          , [ PE.Infix (tkc '<' $> EBinop PoLT) PE.AssocRight ]
           , [ PE.Infix (tkc '=' $> EAs) PE.AssocRight ]
           ] expr_base
 
     stmt :: Parser String ProgF
     stmt = PC.choice
-      [ ProgExpr <$> expr <* tkc ';'
+      [ PC.try $ do
+          PS.string "while" *> PS.skipSpaces
+          _ <- tkc '('
+          c <- expr
+          _ <- tkc ')'
+          b <- block <|> stmt
+          pure $ ProgWhile c b
+      , ProgExpr <$> expr <* tkc ';'
       ]
+
+    block :: Parser String ProgF
+    block = do
+      _ <- tkc '{'
+      stmts <- manyRec stmt
+      _ <- tkc '}'
+      pure $ ProgSeq stmts
 
     type_name :: Parser String String
     type_name = do
@@ -343,6 +358,10 @@ int main(foo, bar) {
   i = 10 + x * 2;
   i = (10+x) * 2;
   printf();
+  i = 0;
+  while (i < 3) {
+    i = i+1;
+  }
 }
 """
 
