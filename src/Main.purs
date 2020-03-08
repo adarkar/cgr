@@ -16,18 +16,19 @@ import Data.Array ((!!), updateAt)
 import Data.Array as A
 import Data.Char (toCharCode)
 import Data.String.CodeUnits (fromCharArray)
-import Data.Tuple (Tuple(..), lookup)
+import Data.String.CodeUnits as SCU
+import Data.Tuple (Tuple(..), lookup, snd)
 -- import Data.Unfoldable
 import Data.Foldable (for_)
 import Data.Traversable (for)
 
 import Control.Alt ((<|>))
-import Control.Monad.RWS (RWS, tell, ask, get, gets, put, modify_, runRWS, RWSResult(..))
+import Control.Monad.RWS (RWS, tell, ask, get, gets, put, modify_, runRWS, execRWS, RWSResult(..))
 import Control.Monad.Cont (ContT, callCC, runContT)
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.Trans.Class (lift)
 
-import Text.Parsing.Parser (Parser, runParser)
+import Text.Parsing.Parser (Parser, ParserT, runParser, runParserT)
 import Text.Parsing.Parser.String as PS
 import Text.Parsing.Parser.Combinators as PC
 import Text.Parsing.Parser.Token as PT
@@ -392,6 +393,32 @@ trace c = lift <<< lift $ tell $ RunW (singleton c) ""
 output :: String -> RunM Unit
 output s = lift <<< lift $ tell $ RunW Nil s
 
+printf :: String -> List Val -> String
+printf ft xs = snd $ execRWS (runParserT ft p) unit xs
+  where
+    p :: ParserT String (RWS Unit String (List Val)) Unit
+    p = do
+      copy <|> format
+      p
+
+    copy = do
+      c <- PS.noneOf ['%']
+      lift $ tell $ SCU.singleton c
+
+    format = do
+      _ <- PS.char '%'
+      f <- PS.anyChar
+      case f of
+        'd' -> lift $ do
+          mx <- get
+          case mx of
+            Cons x ys -> do
+              tell $ show x
+              put ys
+            Nil -> pure unit
+        '%' -> lift $ tell $ SCU.singleton '%'
+        _ -> pure unit
+
 type RunM a = ExceptT String (ContT Unit (RWS Prog RunW RunS)) a
 
 runm :: ProgF -> (Val -> RunM Val) -> RunM Val
@@ -430,7 +457,7 @@ runm p k = case p of
         pure v
       Nothing -> pure VVoid -- should be unreachable (func name not in prog)
   ProgRet e -> ceval e >>= k
-  ProgIOW -> output "ciao" *> pure VVoid
+  ProgIOW -> output (printf "x: %d, y: %d" $ fromFoldable [VInt 5, VInt 6]) *> pure VVoid
   ProgSeq xs -> do
     for_ xs $ \x -> runm x k
     pure VVoid
