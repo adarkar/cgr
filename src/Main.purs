@@ -14,13 +14,13 @@ import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Array ((!!), updateAt)
 import Data.Array as A
-import Data.Char (toCharCode)
+import Data.Char (toCharCode, fromCharCode)
 import Data.String.CodeUnits (fromCharArray)
 import Data.String.CodeUnits as SCU
 import Data.Tuple (Tuple(..), lookup, snd)
 -- import Data.Unfoldable
 import Data.Foldable (for_)
-import Data.Traversable (for)
+import Data.Traversable (for, traverse)
 
 import Control.Alt ((<|>))
 import Control.Monad.State (State, runState)
@@ -153,6 +153,13 @@ frameget frid = do
   case flip find c (\fr -> fr.frid == frid) of
     Just x -> pure x
     Nothing -> throwError "frame not found"
+
+framegettop :: RunM Frame
+framegettop = do
+  Config c <- gets _.config
+  case head c of
+    Just fr -> pure fr
+    Nothing -> throwError "top frame must exist"
 
 readlval :: LVal -> RunM Val
 readlval lv = case lv of
@@ -302,7 +309,7 @@ parse input = case runState (runParserT input prog)
       expr_base = PC.choice
         [ EConst <<< VInt <$> number
         , do
-            _ <- tkc '"'
+            _ <- PS.char '"'
             cs <- toUnfoldable <$> manyRec (PS.noneOf ['"'])
             _ <- tkc '"'
             { fr: stfr, nxid: stid } <- lift get
@@ -385,7 +392,9 @@ int main(foo, bar) {
   x = x + i;
   i = 10 + x * 2;
   i = (10+x) * 2;
-  printf();
+  printf("ciao ");
+  printf(h);
+  printf(" x: %d, y: %d ");
   i = 0;
   while (i < 3) {
     i = i+1;
@@ -474,7 +483,25 @@ runm p k = case p of
         pure v
       Nothing -> pure VVoid -- should be unreachable (func name not in prog)
   ProgRet e -> ceval e >>= k
-  ProgIOW -> output (printf "x: %d, y: %d" $ fromFoldable [VInt 5, VInt 6]) *> pure VVoid
+  ProgIOW -> do
+    frid <- _.frid <$> framegettop
+    ftref <- readlval $ LVAtom frid "format"
+    let vs = fromFoldable [VInt 5, VInt 6]
+    case ftref of
+      VRef (LVAtom frid id) -> do
+        fr <- frameget frid
+        case Map.lookup id fr.env of
+          Just (VArray cs) -> do
+            let
+              getvint (VInt x) = Just x
+              getvint _ = Nothing
+              fts = fromCharArray <$> traverse (fromCharCode <=< getvint) cs
+            case fts of
+              Just fts' -> output $ printf fts' vs
+              Nothing -> throwError "printf: format string invalid"
+          _ -> throwError "printf: format string is not a valid string"
+      _ -> throwError "printf: format string is not a valid ref"
+    pure VVoid
   ProgSeq xs -> do
     for_ xs $ \x -> runm x k
     pure VVoid
