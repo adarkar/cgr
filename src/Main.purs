@@ -332,6 +332,9 @@ parse input = case runParser input prog of
           _ <- tkc ')'
           b <- block <|> stmt
           pure $ ProgWhile c b
+      , PC.try $ do
+          PS.string "return" *> PC.skipMany1 PT.space
+          ProgRet <$> expr <* tkc ';'
       , ProgExpr <$> expr <* tkc ';'
       ]
 
@@ -351,6 +354,10 @@ parse input = case runParser input prog of
 
 test_string :: String
 test_string = """
+int foo (x) {
+  return x+2;
+}
+
 int main(foo, bar) {
   x = 11;
   i = 8;
@@ -362,6 +369,7 @@ int main(foo, bar) {
   while (i < 3) {
     i = i+1;
   }
+  x = foo(i);
 }
 """
 
