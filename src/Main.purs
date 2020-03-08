@@ -186,6 +186,7 @@ writelval lv v = case lv of
 
 data ProgF =
     ProgOp Op
+  | ProgExpr Expr
   | ProgSeq (List ProgF)
   | ProgWhile Expr ProgF
   | ProgIf Expr ProgF
@@ -276,24 +277,41 @@ parse input = case runParser input prog of
 
     number :: Parser String Int
     number = do
-      xs <- map ((\x -> x-0x30) <<< toCharCode) <$> someRec PT.digit
+      xs <- map ((\x -> x-0x30) <<< toCharCode) <$> someRec PT.digit <* PS.skipSpaces
       pure $ conv xs 0
       where
       conv Nil n = n
       conv (x:xs) n = conv xs (10*n + x)
 
+    expr :: Parser String Expr
+    expr = PC.choice
+      [ EConst <<< VInt <$> number
+      , PC.try $ do
+          a <- ident
+          _ <- tkc '['
+          ix <- expr
+          _ <- tkc ']'
+          pure $ ESubscr (EId a) ix
+      , PC.try $ do
+          fn <- ident
+          _ <- tkc '('
+          _ <- tkc ')'
+          pure $ ECall fn Nil
+      , EId <$> ident
+      ]
+
     assign :: Parser String ProgF
     assign = do
       id <- ident
       _ <- tkc '='
-      num <- number
-      pure $ ProgOp $ As { loc: EId id, val: EConst $ VInt num }
+      e <- expr
+      pure $ ProgOp $ As { loc: EId id, val: e }
 
     stmt :: Parser String ProgF
-    stmt = do
-      as <- assign
-      _ <- tkc ';'
-      pure as
+    stmt = (\xs -> PC.choice xs <* tkc ';')
+      [ assign
+      , ProgExpr <$> expr
+      ]
 
     type_name :: Parser String String
     type_name = do
@@ -305,7 +323,9 @@ parse input = case runParser input prog of
 test_string :: String
 test_string = """
 int main(foo, bar) {
-  x = 0;
+  x = 19;
+  i = 0;
+  x = i;
 }
 """
 
@@ -371,6 +391,7 @@ runm p k = case p of
       Nothing -> pure VVoid -- should be unreachable (func name not in prog)
   ProgOp (Ret e) -> ceval e >>= k
   ProgOp IOW -> output "ciao" *> pure VVoid
+  ProgExpr e -> ceval e
   ProgSeq xs -> do
     for_ xs $ \x -> runm x k
     pure VVoid
