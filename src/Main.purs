@@ -23,12 +23,13 @@ import Data.Foldable (for_)
 import Data.Traversable (for)
 
 import Control.Alt ((<|>))
+import Control.Monad.State (State, runState)
 import Control.Monad.RWS (RWS, tell, ask, get, gets, put, modify_, runRWS, execRWS, RWSResult(..))
 import Control.Monad.Cont (ContT, callCC, runContT)
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.Trans.Class (lift)
 
-import Text.Parsing.Parser (Parser, ParserT, runParser, runParserT)
+import Text.Parsing.Parser (ParserT, runParserT)
 import Text.Parsing.Parser.String as PS
 import Text.Parsing.Parser.Combinators as PC
 import Text.Parsing.Parser.Token as PT
@@ -251,25 +252,30 @@ stdlib = fromFoldable
     stdlib_printf :: ProgF
     stdlib_printf = ProgIOW
 
-parse :: String -> Prog
-parse input = case runParser input prog of
-  Left _ -> Nil
-  Right x -> x
+type ParS = { fr :: Frame, nxid :: Int }
+type ParP = ParserT String (State ParS)
+
+parse :: String -> Maybe (Tuple Prog Config)
+parse input = case runState (runParserT input prog)
+    { fr: { name: "static", env: Map.empty, frid: 0 }
+    , nxid: 0 } of
+  Tuple (Left _) _ -> Nothing
+  Tuple (Right x) s -> Just $ Tuple x $ Config $ singleton s.fr
   where
-    prog :: Parser String Prog
+    prog :: ParP Prog
     prog = someRec func
 
-    ident :: Parser String String
+    ident :: ParP String
     ident = do
       f <- PT.letter <|> PS.char '_'
       r <- manyRec PT.alphaNum
       PS.skipSpaces
       pure $ fromCharArray [f] <> fromCharArray (toUnfoldable r)
 
-    tkc :: Char -> Parser String Char
+    tkc :: Char -> ParP Char
     tkc c = PS.char c <* PS.skipSpaces
 
-    func :: Parser String { fname :: String, argns :: Argdef, code :: ProgF }
+    func :: ParP { fname :: String, argns :: Argdef, code :: ProgF }
     func = do
       _ <- PS.skipSpaces *> type_name *> PC.skipMany1 PT.space
       fname <- ident
@@ -281,7 +287,7 @@ parse input = case runParser input prog of
       _ <- tkc '}'
       pure $ { fname: fname, argns: Argdef args, code: ProgSeq stmts }
 
-    number :: Parser String Int
+    number :: ParP Int
     number = do
       xs <- map ((\x -> x-0x30) <<< toCharCode) <$> someRec PT.digit <* PS.skipSpaces
       pure $ conv xs 0
@@ -289,12 +295,23 @@ parse input = case runParser input prog of
       conv Nil n = n
       conv (x:xs) n = conv xs (10*n + x)
 
-    expr :: Parser String Expr
+    expr :: ParP Expr
     expr = expr_tree -- <|> expr_base
       where
-      expr_base :: Parser String Expr
+      expr_base :: ParP Expr
       expr_base = PC.choice
         [ EConst <<< VInt <$> number
+        , do
+            _ <- tkc '"'
+            cs <- toUnfoldable <$> manyRec (PS.noneOf ['"'])
+            _ <- tkc '"'
+            { fr: stfr, nxid: stid } <- lift get
+            let
+              idname = "#s:" <> show stid
+              ary = VArray $ map (VInt <<< toCharCode) cs
+              stfr' = stfr { env = Map.insert idname ary stfr.env }
+            lift $ put { fr: stfr', nxid: (stid + 1) }
+            pure $ EConst $ VRef $ LVAtom stfr.frid idname
         , PC.try $ do
             a <- ident
             _ <- tkc '['
@@ -315,7 +332,7 @@ parse input = case runParser input prog of
             pure e
         ]
 
-      expr_tree :: Parser String Expr
+      expr_tree :: ParP Expr
       expr_tree = do
         PE.buildExprParser
           [ [ PE.Infix (tkc '*' $> EBinop PoMul) PE.AssocRight ]
@@ -324,7 +341,7 @@ parse input = case runParser input prog of
           , [ PE.Infix (tkc '=' $> EAs) PE.AssocRight ]
           ] expr_base
 
-    stmt :: Parser String ProgF
+    stmt :: ParP ProgF
     stmt = PC.choice
       [ PC.try $ do
           PS.string "while" *> PS.skipSpaces
@@ -339,14 +356,14 @@ parse input = case runParser input prog of
       , ProgExpr <$> expr <* tkc ';'
       ]
 
-    block :: Parser String ProgF
+    block :: ParP ProgF
     block = do
       _ <- tkc '{'
       stmts <- manyRec stmt
       _ <- tkc '}'
       pure $ ProgSeq stmts
 
-    type_name :: Parser String String
+    type_name :: ParP String
     type_name = do
       PC.choice $
         [ PS.string "int"
@@ -360,6 +377,9 @@ int foo (x) {
 }
 
 int main(foo, bar) {
+  h = "hello";
+  q = h[0];
+  h[0] = 72;
   x = 11;
   i = 8;
   x = x + i;
@@ -373,9 +393,6 @@ int main(foo, bar) {
   x = foo(i);
 }
 """
-
-test_prog_parsed :: Prog
-test_prog_parsed = parse test_string
 
 type RunS = { config :: Config, nxfrid :: Int }
 
@@ -468,25 +485,22 @@ runm p k = case p of
       _ -> runm x k *> runm p k
   _ -> pure VVoid
 
-test_reset :: Config
-test_reset = Config Nil
-
-test_runm :: Prog -> RWSResult RunS Unit RunW
-test_runm prog =
+test_runm :: Tuple Prog Config -> RWSResult RunS Unit RunW
+test_runm (Tuple prog c) =
   let r = runExceptT $ runm (ProgCall "main" Nil) pure
   in runRWS
     (runContT r (\_ -> pure unit))
     (prog <> stdlib)
-    { config: test_reset, nxfrid: 0 }
+    { config: c, nxfrid: 1 }
 
 runm2lconfig :: RWSResult RunS Unit RunW -> RunW
 runm2lconfig r = let RWSResult s a w = r in w
 
-type State = Int
+type HState = Int
 
 data Query a
   = Step Int a
-  | IsOn (State -> a)
+  | IsOn (HState -> a)
 
 type Input = Unit
 
@@ -502,12 +516,15 @@ myComp =
     }
   where
 
-  initialState :: State
+  initialState :: HState
   initialState = 0
 
-  render :: State -> H.ComponentHTML Query
+  render :: HState -> H.ComponentHTML Query
   render state =
-    let (RunW tr out) = runm2lconfig $ test_runm test_prog_parsed
+    let
+      RunW tr out = case parse test_string of
+        Just x -> runm2lconfig $ test_runm x
+        Nothing -> RunW Nil ""
     in
     HH.div_ $
       [ HH.button [ HE.onClick (HE.input_ $ Step (-1)) ] [ HH.text "<" ]
@@ -529,7 +546,7 @@ myComp =
     where
     f (Tuple k v) = HH.li_ [ HH.text $ k <> ": " <> show v ]
 
-  eval :: Query ~> H.ComponentDSL State Query Message m
+  eval :: Query ~> H.ComponentDSL HState Query Message m
   eval = case _ of
     Step x next -> do
       state <- H.get
