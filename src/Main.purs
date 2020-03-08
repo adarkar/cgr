@@ -22,7 +22,6 @@ import Data.Foldable (for_)
 import Data.Traversable (for)
 
 import Control.Alt ((<|>))
-import Control.Lazy (fix)
 import Control.Monad.RWS (RWS, tell, ask, get, gets, put, modify_, runRWS, RWSResult(..))
 import Control.Monad.Cont (ContT, callCC, runContT)
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
@@ -63,15 +62,8 @@ instance showLVal :: Show LVal where
   show (LVAtom frid id) = "[ref(fr:" <> show frid <> ") " <> id <> "]"
   show (LVAryEl frid id ix) = "[ref(fr:" <> show frid <> ") " <> id <> "[" <> show ix <> "]"
 
-data Op =
-    As { loc :: Expr, val :: Expr }
-  | Call String (List Expr)
-  | Ret Expr
-  | IOW
-  | IOR String (List Int)
-
 data PrimopBin =
- PoAdd | PoMul | PoLT
+  PoAdd | PoMul | PoLT
 
 data PrimopUn = PoNeg
 
@@ -85,6 +77,7 @@ data Expr =
     EId String
   | EConst Val
   | ESubscr Expr Expr
+  | EAs Expr Expr
   | ECall String (List Expr)
   | EBinop PrimopBin Expr Expr
   | EUnop PrimopUn Expr
@@ -108,7 +101,12 @@ ceval e = case e of
   EId id -> leval e >>= readlval
   EConst k -> pure k
   ESubscr ar ix -> leval e >>= readlval
-  ECall id args -> runm (ProgOp $ Call id args) pure
+  EAs loc val -> do
+    lv <- leval loc
+    v <- ceval val
+    writelval lv v
+    pure v
+  ECall id args -> runm (ProgCall id args) pure
   EBinop op a b -> do
     av <- ceval a
     bv <- ceval b
@@ -187,8 +185,11 @@ writelval lv v = case lv of
         _ -> Nothing
 
 data ProgF =
-    ProgOp Op
-  | ProgExpr Expr
+    ProgExpr Expr
+  | ProgCall String (List Expr)
+  | ProgRet Expr
+  | ProgIOW
+  | ProgIOR String (List Int)
   | ProgSeq (List ProgF)
   | ProgWhile Expr ProgF
   | ProgIf Expr ProgF
@@ -200,10 +201,11 @@ data Argdef =
 
 type Prog = List { fname :: String, argns :: Argdef, code :: ProgF }
 
+{-
 test_prog_main :: ProgF
 test_prog_main = ProgSeq $ fromFoldable
-  [ ProgOp $ As { loc: EId "i", val: EConst $ VInt 0 }
-  , ProgOp $ As { loc: EId "x", val: EConst $ VInt 0 }
+  [ ProgExpr $ EAs { loc: EId "i", val: EConst $ VInt 0 }
+  , ProgOp $ EAs { loc: EId "x", val: EConst $ VInt 0 }
   , ProgWhile (EBinop PoLT (EId "i") (EConst $ VInt 5)) $ ProgSeq $ fromFoldable
     [ ProgOp $ As { loc: EId "x", val: EBinop PoAdd (EId "x") (EId "i") }
     , ProgOp $ As { loc: EId "i", val: EBinop PoAdd (EId "i") (EConst $ VInt 1) }
@@ -238,14 +240,15 @@ test_prog = fromFoldable
   , { fname: "foo", argns: Argdef $ fromFoldable ["i"], code: test_prog_foo }
   , { fname: "fib", argns: Argdef $ fromFoldable ["a", "len"], code: test_prog_fib }
   ]
-
-stdlib_printf :: ProgF
-stdlib_printf = ProgOp IOW
+-}
 
 stdlib :: Prog
 stdlib = fromFoldable
   [ { fname: "printf", argns: Argvar $ fromFoldable ["format"], code: stdlib_printf }
   ]
+  where
+    stdlib_printf :: ProgF
+    stdlib_printf = ProgIOW
 
 parse :: String -> Prog
 parse input = case runParser input prog of
@@ -286,7 +289,7 @@ parse input = case runParser input prog of
       conv (x:xs) n = conv xs (10*n + x)
 
     expr :: Parser String Expr
-    expr = PC.try expr_tree <|> expr_base
+    expr = expr_tree -- <|> expr_base
       where
       expr_base :: Parser String Expr
       expr_base = PC.choice
@@ -315,19 +318,12 @@ parse input = case runParser input prog of
         PE.buildExprParser
           [ [ PE.Infix (tkc '*' $> EBinop PoMul) PE.AssocRight ]
           , [ PE.Infix (tkc '+' $> EBinop PoAdd) PE.AssocRight ]
+          , [ PE.Infix (tkc '=' $> EAs) PE.AssocRight ]
           ] expr_base
 
-    assign :: Parser String ProgF
-    assign = do
-      id <- ident
-      _ <- tkc '='
-      e <- expr
-      pure $ ProgOp $ As { loc: EId id, val: e }
-
     stmt :: Parser String ProgF
-    stmt = (\xs -> PC.choice xs <* tkc ';')
-      [ assign
-      -- , ProgExpr <$> expr
+    stmt = PC.choice
+      [ ProgExpr <$> expr <* tkc ';'
       ]
 
     type_name :: Parser String String
@@ -371,12 +367,8 @@ type RunM a = ExceptT String (ContT Unit (RWS Prog RunW RunS)) a
 
 runm :: ProgF -> (Val -> RunM Val) -> RunM Val
 runm p k = case p of
-  ProgOp (As op) -> do
-    lv <- leval op.loc
-    v <- ceval op.val
-    writelval lv v
-    pure v
-  ProgOp (Call id args) -> do
+  ProgExpr e -> ceval e
+  ProgCall id args -> do
     prog <- ask
     let prog_fs = flip map prog $ \{fname: f, argns: as, code: c} -> Tuple f (Tuple as c)
     argsval <- for args ceval
@@ -408,9 +400,8 @@ runm p k = case p of
         gets _.config >>= trace
         pure v
       Nothing -> pure VVoid -- should be unreachable (func name not in prog)
-  ProgOp (Ret e) -> ceval e >>= k
-  ProgOp IOW -> output "ciao" *> pure VVoid
-  ProgExpr e -> ceval e
+  ProgRet e -> ceval e >>= k
+  ProgIOW -> output "ciao" *> pure VVoid
   ProgSeq xs -> do
     for_ xs $ \x -> runm x k
     pure VVoid
@@ -426,7 +417,7 @@ test_reset = Config Nil
 
 test_runm :: Prog -> RWSResult RunS Unit RunW
 test_runm prog =
-  let r = runExceptT $ runm (ProgOp $ Call "main" Nil) pure
+  let r = runExceptT $ runm (ProgCall "main" Nil) pure
   in runRWS
     (runContT r (\_ -> pure unit))
     (prog <> stdlib)
