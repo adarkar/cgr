@@ -22,6 +22,7 @@ import Data.Foldable (for_)
 import Data.Traversable (for)
 
 import Control.Alt ((<|>))
+import Control.Lazy (fix)
 import Control.Monad.RWS (RWS, tell, ask, get, gets, put, modify_, runRWS, RWSResult(..))
 import Control.Monad.Cont (ContT, callCC, runContT)
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
@@ -31,6 +32,7 @@ import Text.Parsing.Parser (Parser, runParser)
 import Text.Parsing.Parser.String as PS
 import Text.Parsing.Parser.Combinators as PC
 import Text.Parsing.Parser.Token as PT
+import Text.Parsing.Parser.Expr as PE
 
 import Halogen as H
 import Halogen.HTML as HH
@@ -284,21 +286,36 @@ parse input = case runParser input prog of
       conv (x:xs) n = conv xs (10*n + x)
 
     expr :: Parser String Expr
-    expr = PC.choice
-      [ EConst <<< VInt <$> number
-      , PC.try $ do
-          a <- ident
-          _ <- tkc '['
-          ix <- expr
-          _ <- tkc ']'
-          pure $ ESubscr (EId a) ix
-      , PC.try $ do
-          fn <- ident
-          _ <- tkc '('
-          _ <- tkc ')'
-          pure $ ECall fn Nil
-      , EId <$> ident
-      ]
+    expr = PC.try expr_tree <|> expr_base
+      where
+      expr_base :: Parser String Expr
+      expr_base = PC.choice
+        [ EConst <<< VInt <$> number
+        , PC.try $ do
+            a <- ident
+            _ <- tkc '['
+            ix <- expr
+            _ <- tkc ']'
+            pure $ ESubscr (EId a) ix
+        , PC.try $ do
+            fn <- ident
+            _ <- tkc '('
+            _ <- tkc ')'
+            pure $ ECall fn Nil
+        , EId <$> ident
+        , do
+            _ <- tkc '('
+            e <- expr
+            _ <- tkc ')'
+            pure e
+        ]
+
+      expr_tree :: Parser String Expr
+      expr_tree = do
+        PE.buildExprParser
+          [ [ PE.Infix (tkc '*' $> EBinop PoMul) PE.AssocRight ]
+          , [ PE.Infix (tkc '+' $> EBinop PoAdd) PE.AssocRight ]
+          ] expr_base
 
     assign :: Parser String ProgF
     assign = do
@@ -310,7 +327,7 @@ parse input = case runParser input prog of
     stmt :: Parser String ProgF
     stmt = (\xs -> PC.choice xs <* tkc ';')
       [ assign
-      , ProgExpr <$> expr
+      -- , ProgExpr <$> expr
       ]
 
     type_name :: Parser String String
@@ -323,9 +340,10 @@ parse input = case runParser input prog of
 test_string :: String
 test_string = """
 int main(foo, bar) {
-  x = 19;
-  i = 0;
-  x = i;
+  x = 11;
+  i = 8;
+  x = x + i;
+  i = 10 + x * 2;
 }
 """
 
