@@ -303,8 +303,9 @@ parse input = case runParser input prog of
         , PC.try $ do
             fn <- ident
             _ <- tkc '('
+            args <- PC.sepBy expr $ tkc ','
             _ <- tkc ')'
-            pure $ ECall fn Nil
+            pure $ ECall fn args
         , EId <$> ident
         , do
             _ <- tkc '('
@@ -341,6 +342,7 @@ int main(foo, bar) {
   x = x + i;
   i = 10 + x * 2;
   i = (10+x) * 2;
+  printf();
 }
 """
 
