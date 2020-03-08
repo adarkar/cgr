@@ -8,7 +8,7 @@ import Effect.Console (log)
 import Data.Maybe (Maybe(..))
 import Data.List
   ( List(..), (:), span, singleton, find, zip, fromFoldable, drop
-  , length, mapWithIndex, toUnfoldable, head, tail
+  , length, toUnfoldable, head, tail
   , manyRec, someRec)
 import Data.Either (Either(..))
 import Data.Map as Map
@@ -394,7 +394,7 @@ int main(foo, bar) {
   i = (10+x) * 2;
   printf("ciao ");
   printf(h);
-  printf(" x: %d, y: %d ");
+  printf(" i: %d, x: %d ", i, x);
   i = 0;
   while (i < 3) {
     i = i+1;
@@ -463,10 +463,9 @@ runm p k = case p of
             Argvar as' ->
               let
                 env = Map.fromFoldable $ zip as' argsval
-                vargs = drop (length as') argsval
-                venv = Map.fromFoldable $ flip mapWithIndex vargs $ \i va ->
-                  Tuple ("vararg-" <> show i) va
-              in { name: id, env: Map.union env venv, frid: nxfrid }
+                vargs = VArray <<< toUnfoldable $ drop (length as') argsval
+                venv = Map.insert "#varargs" vargs env
+              in { name: id, env: venv, frid: nxfrid }
           y = Config $ fr : c
         trace y
         put { config: y, nxfrid: nxfrid + 1 }
@@ -484,12 +483,16 @@ runm p k = case p of
       Nothing -> pure VVoid -- should be unreachable (func name not in prog)
   ProgRet e -> ceval e >>= k
   ProgIOW -> do
-    frid <- _.frid <$> framegettop
+    frtop <- framegettop
+    let frid = frtop.frid
     ftref <- readlval $ LVAtom frid "format"
-    let vs = fromFoldable [VInt 5, VInt 6]
+    vs <- case Map.lookup "#varargs" frtop.env of
+      Just (VArray vs') -> pure $ fromFoldable vs'
+      Just _ -> throwError "invalid varargs array"
+      Nothing -> pure $ Nil
     case ftref of
-      VRef (LVAtom frid id) -> do
-        fr <- frameget frid
+      VRef (LVAtom frid' id) -> do
+        fr <- frameget frid'
         case Map.lookup id fr.env of
           Just (VArray cs) -> do
             let
@@ -498,7 +501,7 @@ runm p k = case p of
               fts = fromCharArray <$> traverse (fromCharCode <=< getvint) cs
             case fts of
               Just fts' -> output $ printf fts' vs
-              Nothing -> throwError "printf: format string invalid"
+              Nothing -> throwError "printf: can't convert format string"
           _ -> throwError "printf: format string is not a valid string"
       _ -> throwError "printf: format string is not a valid ref"
     pure VVoid
