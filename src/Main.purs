@@ -614,7 +614,7 @@ myComp =
               "height: 300px;"
           ]
           [ case tr !! state.tstep of
-              Just conf -> r_timestep state.tstep conf
+              Just conf -> r_timestep Nothing conf
               Nothing -> HH.div_ []
           ]
       , HH.div
@@ -622,21 +622,20 @@ myComp =
               $  "white-space: nowrap; overflow: scroll;"
               <> "padding-bottom: 20px;"
           ]
-          [ HH.div_ $ flip A.mapWithIndex (toUnfoldable tr) r_timestep
+          [ HH.div_ $ flip A.mapWithIndex (toUnfoldable tr)
+              $ \i c -> r_timestep (Just i) c
           ]
       ]
     where
-    r_timestep :: Int -> Config -> H.ComponentHTML Query
+    r_timestep :: Maybe Int -> Config -> H.ComponentHTML Query
     r_timestep i (Config s) = HH.div
       [ HP.attr (HC.AttrName "style")
           $  "display: inline-block;"
           <> "vertical-align: bottom;"
           <> "width: 250px;"
-          <> "overflow: scroll;"
+          -- <> "overflow: scroll;"
           <> "margin: 5px;"
       ] $
-      [ HH.text $ "t: " <> show i
-      ] <>
       [ HH.div_ $ flip map (toUnfoldable s) $ \fr ->
           HH.div
             [ HP.attr (HC.AttrName "style")
@@ -654,11 +653,15 @@ myComp =
             , HH.div
                 [ HP.attr (HC.AttrName "style")
                     $  "font-family: monospace; font-size: 14;"
+                    <> "overflow: scroll;"
                     <> "padding: 5px;"
                 ]
                 $ map f (Map.toUnfoldable fr.env)
             ]
       ]
+      <> case i of
+        Just i' -> [ HH.div_ [ HH.text $ "t: " <> show i' ] ]
+        Nothing -> []
 
     f (Tuple k v) = HH.div_ [ HH.text $ k <> ": " <> show v ]
 
