@@ -594,29 +594,88 @@ myComp =
         Nothing -> RunW Nil ""
     in
     HH.div_ $
-      [ HH.div_
-        [ HH.textarea
-          [ HP.value state.text
-          , HP.ref $ H.RefLabel "editor"
-          , HP.attr (HC.AttrName "style") "font-family: monospace;"
-          , HP.rows 30
-          , HP.cols 40
-          ]
+      [ HH.div
+        [ HP.attr (HC.AttrName "style")
+            $  "white-space: nowrap; overflow: scroll;"
+            <> "padding-bottom: 20px;"
         ]
-      , HH.div_
-        [ HH.button [ HE.onClick $ HE.input_ $ HRun ] [ HH.text "run" ] ]
-      , HH.button [ HE.onClick (HE.input_ $ Step (-1)) ] [ HH.text "<" ]
-      , HH.text $ " " <> show state.tstep <> " "
-      , HH.button [ HE.onClick (HE.input_ $ Step 1) ] [ HH.text ">" ]
-      , HH.div_ [ HH.text $ "Out: " <> out ]
-      , HH.div
-          [ HP.attr (HC.AttrName "style")
-              "height: 300px;"
-          ]
-          [ case tr !! state.tstep of
-              Just conf -> r_timestep Nothing conf
-              Nothing -> HH.div_ []
-          ]
+        [ HH.div
+            [ HP.attr (HC.AttrName "style")
+                $  "display: inline-block;"
+                <> "vertical-align: top;"
+                <> "margin-left: 2px;"
+                <> "margin-right: 2px;"
+            ]
+            [ HH.textarea
+              [ HP.value state.text
+              , HP.ref $ H.RefLabel "editor"
+              , HP.attr (HC.AttrName "style") "font-family: monospace;"
+              , HP.rows 30
+              , HP.cols 40
+              ]
+            ]
+        , HH.div
+            [ HP.attr (HC.AttrName "style")
+                $  "display: inline-block;"
+                <> "vertical-align: top;"
+                <> "margin-left: 2px;"
+                <> "margin-right: 2px;"
+            ]
+            [ HH.button
+                [ HE.onClick $ HE.input_ $ HRun
+                , HP.attr (HC.AttrName "style")
+                    $  "width: 50px;"
+                    <> "height: 50px;"
+                    <> "background: chartreuse"
+                ]
+                [ HH.text "run" ] ]
+        , HH.div
+            [ HP.attr (HC.AttrName "style")
+                $  "display: inline-block;"
+                <> "vertical-align: top;"
+                <> "width: 250px;"
+                <> "margin-left: 2px;"
+                <> "margin-right: 2px;"
+                <> "background: black;"
+            ]
+            [ HH.div
+                [ HP.attr (HC.AttrName "style")
+                    $  "background: purple;"
+                    <> "color: white;"
+                    <> "margin: 5px;"
+                ]
+                [ HH.text "Output stream"]
+            , HH.div
+                [ HP.attr (HC.AttrName "style")
+                    $  "font-family: monospace;"
+                    <> "color: lime;"
+                    <> "padding: 5px;"
+                ]
+                [ HH.text out ]
+            ]
+        , HH.div
+            [ HP.attr (HC.AttrName "style")
+                $  "display: inline-block;"
+                <> "vertical-align: top;"
+                <> "margin-left: 2px;"
+                <> "margin-right: 2px;"
+            ]
+            [ HH.div_ [ HH.text "Time travel" ]
+            , HH.div_
+                [ HH.button [ HE.onClick (HE.input_ $ Step (-1)) ] [ HH.text "<" ]
+                , HH.text $ " " <> show state.tstep <> " "
+                , HH.button [ HE.onClick (HE.input_ $ Step 1) ] [ HH.text ">" ]
+                ]
+            , HH.div
+                [ HP.attr (HC.AttrName "style")
+                    "height: 300px;"
+                ]
+                [ case tr !! state.tstep of
+                    Just conf -> r_timestep Nothing conf
+                    Nothing -> HH.div_ []
+                ]
+            ]
+        ]
       , HH.div
           [ HP.attr (HC.AttrName "style")
               $  "white-space: nowrap; overflow: scroll;"
@@ -631,9 +690,10 @@ myComp =
       [ HP.attr (HC.AttrName "style")
           $  "display: inline-block;"
           <> "vertical-align: bottom;"
-          <> "width: 250px;"
+          <> case i of
+                Just _ -> "width: 250px; margin: 5px;"
+                Nothing -> ""
           -- <> "overflow: scroll;"
-          <> "margin: 5px;"
       ] $
       [ HH.div_ $ flip map (toUnfoldable s) $ \fr ->
           HH.div
