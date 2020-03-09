@@ -6,7 +6,7 @@ import Effect (Effect)
 import Effect.Console (log)
 import Effect.Class (class MonadEffect)
 
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.List
   ( List(..), (:), (!!), span, singleton, find, zip, fromFoldable, drop
   , length, toUnfoldable, head, tail
@@ -50,12 +50,14 @@ data Val =
     VVoid
   | VInt Int
   | VFloat Number
+  | VUndef
   | VArray (Array Val)
   | VRef LVal
 
 instance showVal :: Show Val where
   show VVoid = "void"
   show (VInt x) = show x
+  show VUndef = fromMaybe "#undefined" $ SCU.singleton <$> fromCharCode 0x22A5
   show (VArray x) = show x
   show (VRef lv) = show lv
   show _ = "todo"
@@ -201,6 +203,8 @@ data ProgF =
     ProgExpr Expr
   | ProgCall String (List Expr)
   | ProgRet Expr
+  | ProgAllocVar String
+  | ProgAllocAry String Expr
   | ProgIOW
   | ProgIOR String (List Int)
   | ProgSeq (List ProgF)
@@ -364,7 +368,8 @@ parse input = case runState (runParserT input prog)
 
     stmt :: ParP ProgF
     stmt = PC.choice
-      [ PC.try $ do
+      [ PC.try $ ProgSeq <$> declstmt
+      , PC.try $ do
           PS.string "while" *> PS.skipSpaces
           _ <- tkc '('
           c <- expr
@@ -375,6 +380,24 @@ parse input = case runState (runParserT input prog)
           PS.string "return" *> PC.skipMany1 PT.space
           ProgRet <$> expr <* tkc ';'
       , ProgExpr <$> expr <* tkc ';'
+      ]
+
+    declstmt :: ParP (List ProgF)
+    declstmt = do
+      type_name *> PC.skipMany1 PT.space
+      ds <- PC.sepBy1 vdecl $ tkc ','
+      _ <- tkc ';'
+      pure ds
+
+    vdecl :: ParP ProgF
+    vdecl = PC.choice
+      [ PC.try $ do
+          id <- ident
+          _ <- tkc '['
+          len <- expr
+          _ <- tkc ']'
+          pure $ ProgAllocAry id len
+      , ProgAllocVar <$> ident
       ]
 
     block :: ParP ProgF
@@ -389,6 +412,7 @@ parse input = case runState (runParserT input prog)
       PC.choice $
         [ PS.string "int"
         , PS.string "void"
+        , PS.string "char"
         ]
 
 hello_world :: String
@@ -525,6 +549,19 @@ runm p k = case p of
         pure v
       Nothing -> pure VVoid -- should be unreachable (func name not in prog)
   ProgRet e -> ceval e >>= k
+  ProgAllocVar id -> do
+    fr <- framegettop
+    let env' = Map.insert id VUndef fr.env
+    frameput fr.frid $ fr { env = env' }
+    pure VVoid
+  ProgAllocAry id len -> do
+    fr <- framegettop
+    ceval len >>= case _ of
+      VInt len' -> do
+        let env' = Map.insert id (VArray $ A.replicate len' VUndef) fr.env
+        frameput fr.frid $ fr { env = env' }
+      _ -> throwError "alloc array size must be int"
+    pure VVoid
   ProgIOW -> do
     frtop <- framegettop
     let frid = frtop.frid
