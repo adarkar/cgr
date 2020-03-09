@@ -622,9 +622,8 @@ myComp =
               $  "white-space: nowrap; overflow: scroll;"
               <> "padding-bottom: 20px;"
           ]
-          [ HH.div_ $ flip A.mapWithIndex (toUnfoldable tr)
-              $ \i c -> r_timestep (Just i) c
-          ]
+          $ flip A.mapWithIndex (toUnfoldable tr)
+            $ \i c -> r_timestep (Just i) c
       ]
     where
     r_timestep :: Maybe Int -> Config -> H.ComponentHTML Query
