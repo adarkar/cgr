@@ -314,12 +314,22 @@ parse input = case runState (runParserT input prog)
         [ EConst <<< VInt <$> number
         , do
             _ <- PS.char '"'
-            cs <- toUnfoldable <$> manyRec (PS.noneOf ['"'])
+            cs <- manyRec $ PC.choice
+              [ do
+                  _ <- PS.char '\\'
+                  c <- PS.anyChar
+                  case c of
+                    '"' -> pure c
+                    'n' -> pure '\n'
+                    '\\' -> pure '\\'
+                    _ -> pure c
+              , PS.noneOf ['"']
+              ]
             _ <- tkc '"'
             { fr: stfr, nxid: stid } <- lift get
             let
               idname = "#s:" <> show stid
-              ary = VArray $ map (VInt <<< toCharCode) cs
+              ary = VArray $ map (VInt <<< toCharCode) $ toUnfoldable cs
               stfr' = stfr { env = Map.insert idname ary stfr.env }
             lift $ put { fr: stfr', nxid: (stid + 1) }
             pure $ EConst $ VRef $ LVAtom stfr.frid idname
@@ -414,6 +424,7 @@ int main(foo, bar) {
 }
 """
 
+test_prog_1 :: String
 test_prog_1 = """
 int foo (x) {
   i = 0;
