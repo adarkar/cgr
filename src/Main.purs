@@ -4,6 +4,7 @@ import Prelude
 
 import Effect (Effect)
 import Effect.Console (log)
+import Effect.Class (class MonadEffect)
 
 import Data.Maybe (Maybe(..))
 import Data.List
@@ -37,10 +38,13 @@ import Text.Parsing.Parser.Expr as PE
 
 import Halogen as H
 import Halogen.HTML as HH
+import Halogen.HTML.Core as HC
 import Halogen.HTML.Events as HE
--- import Halogen.HTML.Properties as HP
+import Halogen.HTML.Properties as HP
 import Halogen.Aff as HA
 import Halogen.VDom.Driver (runUI)
+
+import Web.HTML.HTMLTextAreaElement as HTextArea
 
 data Val =
     VVoid
@@ -403,6 +407,27 @@ int main(foo, bar) {
 }
 """
 
+test_prog_1 = """
+int foo (x) {
+  i = 0;
+  y = 0;
+  while (i < x+1) {
+    y = y+i;
+    i = i+1;
+  }
+  return y;
+}
+
+int main(foo, bar) {
+  h = "hello";
+  h[0] = 72;
+  printf(h);
+
+  x = foo(3);
+  printf(" x: %d", x);
+}
+"""
+
 type RunS = { config :: Config, nxfrid :: Int }
 
 data RunW = RunW (List Config) String
@@ -526,17 +551,21 @@ test_runm (Tuple prog c) =
 runm2lconfig :: RWSResult RunS Unit RunW -> RunW
 runm2lconfig r = let RWSResult s a w = r in w
 
-type HState = Int
+type HState =
+  { text :: String
+  , tstep :: Int
+  }
 
 data Query a
   = Step Int a
+  | HRun a
   | IsOn (HState -> a)
 
 type Input = Unit
 
 data Message = Toggled Boolean
 
-myComp :: forall m. H.Component HH.HTML Query Input Message m
+myComp :: forall m. MonadEffect m => H.Component HH.HTML Query Input Message m
 myComp =
   H.component
     { initialState: const initialState
@@ -547,18 +576,30 @@ myComp =
   where
 
   initialState :: HState
-  initialState = 0
+  initialState = { text: test_string, tstep: 0 }
 
   render :: HState -> H.ComponentHTML Query
   render state =
     let
-      RunW tr out = case parse test_string of
+      progtext = state.text
+      RunW tr out = case parse progtext of
         Just x -> runm2lconfig $ test_runm x
         Nothing -> RunW Nil ""
     in
     HH.div_ $
-      [ HH.button [ HE.onClick (HE.input_ $ Step (-1)) ] [ HH.text "<" ]
-      , HH.text $ " " <> show state <> " "
+      [ HH.div_
+        [ HH.textarea
+          [ HP.value test_string
+          , HP.ref $ H.RefLabel "editor"
+          , HP.attr (HC.AttrName "style") "font-family: monospace"
+          , HP.rows 30
+          , HP.cols 40
+          ]
+        ]
+      , HH.div_
+        [ HH.button [ HE.onClick $ HE.input_ $ HRun ] [ HH.text "run" ] ]
+      , HH.button [ HE.onClick (HE.input_ $ Step (-1)) ] [ HH.text "<" ]
+      , HH.text $ " " <> show state.tstep <> " "
       , HH.button [ HE.onClick (HE.input_ $ Step 1) ] [ HH.text ">" ]
       , HH.div_ [ HH.text $ "Out: " <> out ]
       ] <>
@@ -580,9 +621,19 @@ myComp =
   eval = case _ of
     Step x next -> do
       state <- H.get
-      let nextState = state + x
+      let nextState = state { tstep = state.tstep + x }
       H.put nextState
       H.raise $ Toggled true
+      pure next
+    HRun next -> do
+      H.getHTMLElementRef (H.RefLabel "editor") >>= case _ of
+        Nothing -> pure unit
+        Just el -> case HTextArea.fromHTMLElement el of
+          Nothing -> pure unit
+          Just t -> do
+            text <- H.liftEffect $ HTextArea.value t
+            H.put { text: text, tstep: 0 }
+            -- H.liftEffect $ HTextArea.setValue "ciao" t
       pure next
     IsOn reply -> do
       state <- H.get
