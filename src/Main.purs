@@ -8,12 +8,12 @@ import Effect.Class (class MonadEffect)
 
 import Data.Maybe (Maybe(..))
 import Data.List
-  ( List(..), (:), span, singleton, find, zip, fromFoldable, drop
+  ( List(..), (:), (!!), span, singleton, find, zip, fromFoldable, drop
   , length, toUnfoldable, head, tail
   , manyRec, someRec)
 import Data.Either (Either(..))
 import Data.Map as Map
-import Data.Array ((!!), updateAt)
+import Data.Array (updateAt)
 import Data.Array as A
 import Data.Char (toCharCode, fromCharCode)
 import Data.String.CodeUnits (fromCharArray)
@@ -176,7 +176,7 @@ readlval lv = case lv of
   LVAryEl frid id ix -> do
     fr <- frameget frid
     case Map.lookup id fr.env of
-      Just (VArray ar) -> case ar !! ix of
+      Just (VArray ar) -> case ar A.!! ix of
         Just v -> pure v
         Nothing -> throwError "index out of bounds"
       Just _ -> throwError "can't index non array value"
@@ -381,8 +381,15 @@ parse input = case runState (runParserT input prog)
         , PS.string "void"
         ]
 
-test_string :: String
-test_string = """
+hello_world :: String
+hello_world = """
+int main() {
+  printf("Hello world!");
+}
+"""
+
+test_prog_2 :: String
+test_prog_2 = """
 int foo (x) {
   return x+2;
 }
@@ -576,7 +583,7 @@ myComp =
   where
 
   initialState :: HState
-  initialState = { text: test_string, tstep: 0 }
+  initialState = { text: hello_world, tstep: 0 }
 
   render :: HState -> H.ComponentHTML Query
   render state =
@@ -589,9 +596,9 @@ myComp =
     HH.div_ $
       [ HH.div_
         [ HH.textarea
-          [ HP.value test_string
+          [ HP.value state.text
           , HP.ref $ H.RefLabel "editor"
-          , HP.attr (HC.AttrName "style") "font-family: monospace"
+          , HP.attr (HC.AttrName "style") "font-family: monospace;"
           , HP.rows 30
           , HP.cols 40
           ]
@@ -602,20 +609,56 @@ myComp =
       , HH.text $ " " <> show state.tstep <> " "
       , HH.button [ HE.onClick (HE.input_ $ Step 1) ] [ HH.text ">" ]
       , HH.div_ [ HH.text $ "Out: " <> out ]
-      ] <>
-      (flip A.mapWithIndex (toUnfoldable tr) $ \i (Config s) ->
-        HH.div_ $
-          [ HH.text $ "t: " <> show i
-          ] <>
-          (flip map (toUnfoldable s) $ \fr ->
-            HH.div_
-              [ HH.text $ "fr [" <> show fr.frid <> "]: " <> fr.name
-              , HH.ul_ $ map f (Map.toUnfoldable fr.env)
-              ]
-          )
-      )
+      , HH.div
+          [ HP.attr (HC.AttrName "style")
+              "height: 300px;"
+          ]
+          [ case tr !! state.tstep of
+              Just conf -> r_timestep state.tstep conf
+              Nothing -> HH.div_ []
+          ]
+      , HH.div
+          [ HP.attr (HC.AttrName "style")
+              "white-space: nowrap; overflow: scroll;"
+          ] $
+          flip A.mapWithIndex (toUnfoldable tr) r_timestep
+      ]
     where
-    f (Tuple k v) = HH.li_ [ HH.text $ k <> ": " <> show v ]
+    r_timestep :: Int -> Config -> H.ComponentHTML Query
+    r_timestep i (Config s) = HH.div
+      [ HP.attr (HC.AttrName "style")
+          $  "display: inline-block;"
+          <> "vertical-align: bottom;"
+          <> "width: 250px;"
+          <> "overflow: scroll;"
+          <> "margin: 5px;"
+      ] $
+      [ HH.text $ "t: " <> show i
+      ] <>
+      (flip map (toUnfoldable s) $ \fr ->
+        HH.div
+          [ HP.attr (HC.AttrName "style")
+              $  "background: peachpuff;"
+              <> "margin: 2px;"
+              <> "padding: 2px;"
+          ]
+          [ HH.div
+              [ HP.attr (HC.AttrName "style")
+                  $  "font-family: sans-serif; font-size: 12;"
+                  <> "margin: 5px;"
+                  <> "background: tomato;"
+              ]
+              [ HH.text $ "(" <> show fr.frid <> ") " <> fr.name ]
+          , HH.div
+              [ HP.attr (HC.AttrName "style")
+                  $  "font-family: monospace; font-size: 14;"
+                  <> "padding: 5px;"
+              ]
+              $ map f (Map.toUnfoldable fr.env)
+          ]
+      )
+
+    f (Tuple k v) = HH.div_ [ HH.text $ k <> ": " <> show v ]
 
   eval :: Query ~> H.ComponentDSL HState Query Message m
   eval = case _ of
