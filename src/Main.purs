@@ -65,8 +65,8 @@ data LVal =
  | LVAryEl Int String Int
 
 instance showLVal :: Show LVal where
-  show (LVAtom frid id) = "[ref(fr:" <> show frid <> ") " <> id <> "]"
-  show (LVAryEl frid id ix) = "[ref(fr:" <> show frid <> ") " <> id <> "[" <> show ix <> "]"
+  show (LVAtom frid id) = "#ref[(" <> show frid <> ") " <> id <> "]"
+  show (LVAryEl frid id ix) = "#ref[(" <> show frid <> ") " <> id <> "[" <> show ix <> "]]"
 
 data PrimopBin =
   PoAdd | PoMul | PoLT
@@ -268,7 +268,7 @@ type ParP = ParserT String (State ParS)
 
 parse :: String -> Maybe (Tuple Prog Config)
 parse input = case runState (runParserT input prog)
-    { fr: { name: "static", env: Map.empty, frid: 0 }
+    { fr: { name: "#static", env: Map.empty, frid: 0 }
     , nxid: 0 } of
   Tuple (Left _) _ -> Nothing
   Tuple (Right x) s -> Just $ Tuple x $ Config $ singleton s.fr
@@ -619,9 +619,11 @@ myComp =
           ]
       , HH.div
           [ HP.attr (HC.AttrName "style")
-              "white-space: nowrap; overflow: scroll;"
-          ] $
-          flip A.mapWithIndex (toUnfoldable tr) r_timestep
+              $  "white-space: nowrap; overflow: scroll;"
+              <> "padding-bottom: 20px;"
+          ]
+          [ HH.div_ $ flip A.mapWithIndex (toUnfoldable tr) r_timestep
+          ]
       ]
     where
     r_timestep :: Int -> Config -> H.ComponentHTML Query
@@ -635,28 +637,28 @@ myComp =
       ] $
       [ HH.text $ "t: " <> show i
       ] <>
-      (flip map (toUnfoldable s) $ \fr ->
-        HH.div
-          [ HP.attr (HC.AttrName "style")
-              $  "background: peachpuff;"
-              <> "margin: 2px;"
-              <> "padding: 2px;"
-          ]
-          [ HH.div
-              [ HP.attr (HC.AttrName "style")
-                  $  "font-family: sans-serif; font-size: 12;"
-                  <> "margin: 5px;"
-                  <> "background: tomato;"
-              ]
-              [ HH.text $ "(" <> show fr.frid <> ") " <> fr.name ]
-          , HH.div
-              [ HP.attr (HC.AttrName "style")
-                  $  "font-family: monospace; font-size: 14;"
-                  <> "padding: 5px;"
-              ]
-              $ map f (Map.toUnfoldable fr.env)
-          ]
-      )
+      [ HH.div_ $ flip map (toUnfoldable s) $ \fr ->
+          HH.div
+            [ HP.attr (HC.AttrName "style")
+                $  "background: peachpuff;"
+                <> "margin: 2px;"
+                <> "padding: 2px;"
+            ]
+            [ HH.div
+                [ HP.attr (HC.AttrName "style")
+                    $  "font-family: sans-serif; font-size: 12;"
+                    <> "margin: 5px;"
+                    <> "background: tomato;"
+                ]
+                [ HH.text $ "(" <> show fr.frid <> ") " <> fr.name ]
+            , HH.div
+                [ HP.attr (HC.AttrName "style")
+                    $  "font-family: monospace; font-size: 14;"
+                    <> "padding: 5px;"
+                ]
+                $ map f (Map.toUnfoldable fr.env)
+            ]
+      ]
 
     f (Tuple k v) = HH.div_ [ HH.text $ k <> ": " <> show v ]
 
