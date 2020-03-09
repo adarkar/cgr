@@ -651,7 +651,10 @@ myComp =
                     <> "color: lime;"
                     <> "padding: 5px;"
                 ]
-                [ HH.text out ]
+                [ HH.pre
+                  [ HP.attr (HC.AttrName "style") "margin: 0px;" ]
+                  [ HH.text out ]
+                ]
             ]
         , HH.div
             [ HP.attr (HC.AttrName "style")
