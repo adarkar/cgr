@@ -468,7 +468,12 @@ parse input = case runState (runParserT input prog)
           c <- expr
           _ <- tkc ')'
           b <- block <|> stmt
-          pure $ ProgIf c b
+          els <- PC.optionMaybe $ do
+            PS.string "else" *> PS.skipSpaces
+            block <|> stmt
+          pure $ case els of
+            Nothing -> ProgIf c b
+            Just b' -> ProgIfElse c b b'
       , PC.try $ do
           PS.string "return" *> PC.skipMany1 PT.space
           ProgRet <$> expr <* tkc ';'
@@ -687,6 +692,11 @@ runm p k = case p of
     b <- ceval e
     case b of
       VInt 0 -> pure VVoid
+      _ -> runm x k
+  ProgIfElse e x x' -> do
+    b <- ceval e
+    case b of
+      VInt 0 -> runm x' k
       _ -> runm x k
   _ -> pure VVoid
 
