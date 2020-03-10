@@ -256,7 +256,7 @@ parse input = case runState (runParserT input prog)
       _ <- PS.skipSpaces *> type_name *> PC.skipMany1 PT.space
       fname <- ident
       _ <- tkc '('
-      args <- PC.sepBy ident (tkc ',')
+      args <- PC.sepBy (type_name *> PC.skipMany1 PT.space *> ident) (tkc ',')
       _ <- tkc ')'
       _ <- tkc '{'
       stmts <- manyRec stmt
@@ -399,6 +399,24 @@ int main() {
 int main() {
   int x = 42;
   printf("x: %d\n", x);
+}
+"""
+  , Tuple "Numeri triangolari" """
+int tri(int n) {
+  int x=i=0;
+  while (i<n+1) {
+    x = x+i;
+    i = i+1;
+  }
+  return x;
+}
+
+int main() {
+  int i=0;
+  while (i < 8) {
+    printf("tri(%d) = %d\n", i, tri(i));
+    i = i+1;
+  }
 }
 """
   ]
