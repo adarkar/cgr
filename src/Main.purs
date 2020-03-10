@@ -256,12 +256,14 @@ parse input = case runState (runParserT input prog)
       _ <- PS.skipSpaces *> type_name *> PC.skipMany1 PT.space
       fname <- ident
       _ <- tkc '('
-      args <- PC.sepBy (type_name *> PC.skipMany1 PT.space *> ident) (tkc ',')
+      args <- PC.sepBy (type_name *> PC.skipMany1 PT.space *> argdecl) (tkc ',')
       _ <- tkc ')'
       _ <- tkc '{'
       stmts <- manyRec stmt
       _ <- tkc '}'
       pure $ { fname: fname, argns: Argdef args, code: ProgSeq stmts }
+      where
+      argdecl = ident <* PC.optional (PS.string "[]")
 
     number :: ParP Int
     number = do
