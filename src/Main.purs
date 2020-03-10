@@ -16,21 +16,23 @@ import Data.Map as Map
 import Data.Array (updateAt)
 import Data.Array as A
 import Data.Char (toCharCode, fromCharCode)
+import Data.String (split, joinWith)
+import Data.String.Pattern (Pattern(..))
 import Data.String.CodeUnits (fromCharArray)
 import Data.String.CodeUnits as SCU
 import Data.Tuple (Tuple(..), lookup, fst, snd)
 -- import Data.Unfoldable
-import Data.Foldable (for_)
+import Data.Foldable (fold, for_)
 import Data.Traversable (for, traverse)
 
 import Control.Alt ((<|>))
-import Control.Monad.State (State, runState)
+import Control.Monad.State (State, runState, evalState)
 import Control.Monad.RWS (RWS, tell, ask, get, gets, put, modify_, runRWS, execRWS, RWSResult(..))
 import Control.Monad.Cont (ContT, callCC, runContT)
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.Trans.Class (lift)
 
-import Text.Parsing.Parser (ParserT, runParserT)
+import Text.Parsing.Parser (ParserT, runParserT, Parser, runParser)
 import Text.Parsing.Parser.String as PS
 import Text.Parsing.Parser.Combinators as PC
 import Text.Parsing.Parser.Token as PT
@@ -227,6 +229,50 @@ stdlib = fromFoldable
   where
     stdlib_printf :: ProgF
     stdlib_printf = ProgIOW
+
+type PreprocDef = Map.Map String String
+
+preprocessor :: String -> String
+preprocessor inp =
+  let m = traverse go (split (Pattern "\n") inp)
+  in joinWith "\n" $ evalState m Map.empty
+  where
+  go :: String -> State PreprocDef String
+  go row = do
+    s <- get
+    case runParser row (pp s) of
+      Right a -> a
+      Left _ -> pure ""
+
+  pp :: PreprocDef -> Parser String (State PreprocDef String)
+  pp s = PC.choice
+    [ do
+        PS.string "#define" *> PC.skipMany1 PT.space
+        id <- ident
+        PS.skipSpaces
+        v <- PC.optionMaybe $ (fromCharArray <<< toUnfoldable) <$> manyRec PS.anyChar
+        pure $ do
+          modify_ $ Map.insert id $ fromMaybe "" v
+          pure ""
+    , pure <$> fold <$> manyRec expand
+    ]
+    where
+    expand = do
+      PC.choice
+        [ do
+            id <- ident
+            pure $ fromMaybe id $ Map.lookup id s
+        , do
+            _ <- PS.char '"'
+            str <- fromCharArray <<< toUnfoldable <$> manyRec (PS.noneOf ['"'])
+            _ <- PS.char '"'
+            pure $ "\"" <> str <> "\""
+        , SCU.singleton <$> PS.anyChar
+        ]
+    ident = do
+      f <- PT.letter <|> PS.char '_'
+      r <- manyRec PT.alphaNum
+      pure $ fromCharArray [f] <> fromCharArray (toUnfoldable r)
 
 type ParS = { fr :: Frame, nxid :: Int }
 type ParP = ParserT String (State ParS)
@@ -597,7 +643,7 @@ myComp =
   render :: HState -> H.ComponentHTML Query
   render state =
     let
-      progtext = state.text
+      progtext = preprocessor state.text
       RunW tr out = case parse progtext of
         Just x -> runm2lconfig $ test_runm x
         Nothing -> RunW Nil ""
@@ -649,7 +695,8 @@ myComp =
                 <> "height: 50px;"
                 <> "background: chartreuse"
             ]
-            [ HH.text "run" ] ]
+            [ HH.text "run" ]
+          ]
         , HH.div
           [ HP.attr (HC.AttrName "style")
               $  "display: inline-block;"
