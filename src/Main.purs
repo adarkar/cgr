@@ -334,7 +334,7 @@ parse input = case runState (runParserT input prog)
     ident :: ParP String
     ident = do
       f <- PT.letter <|> PS.char '_'
-      r <- manyRec PT.alphaNum
+      r <- manyRec (PT.alphaNum <|> PS.char '_')
       PS.skipSpaces
       pure $ fromCharArray [f] <> fromCharArray (toUnfoldable r)
 
@@ -462,6 +462,13 @@ parse input = case runState (runParserT input prog)
           _ <- tkc ')'
           b <- block <|> stmt
           pure $ ProgWhile c b
+      , PC.try $ do
+          PS.string "if" *> PS.skipSpaces
+          _ <- tkc '('
+          c <- expr
+          _ <- tkc ')'
+          b <- block <|> stmt
+          pure $ ProgIf c b
       , PC.try $ do
           PS.string "return" *> PC.skipMany1 PT.space
           ProgRet <$> expr <* tkc ';'
@@ -676,6 +683,11 @@ runm p k = case p of
     case b of
       VInt 0 -> pure VVoid
       _ -> runm x k *> runm p k
+  ProgIf e x -> do
+    b <- ceval e
+    case b of
+      VInt 0 -> pure VVoid
+      _ -> runm x k
   _ -> pure VVoid
 
 test_runm :: Tuple Prog Config -> RWSResult RunS Unit RunW
