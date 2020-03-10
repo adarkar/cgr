@@ -220,47 +220,6 @@ data Argdef =
 
 type Prog = List { fname :: String, argns :: Argdef, code :: ProgF }
 
-{-
-test_prog_main :: ProgF
-test_prog_main = ProgSeq $ fromFoldable
-  [ ProgExpr $ EAs { loc: EId "i", val: EConst $ VInt 0 }
-  , ProgOp $ EAs { loc: EId "x", val: EConst $ VInt 0 }
-  , ProgWhile (EBinop PoLT (EId "i") (EConst $ VInt 5)) $ ProgSeq $ fromFoldable
-    [ ProgOp $ As { loc: EId "x", val: EBinop PoAdd (EId "x") (EId "i") }
-    , ProgOp $ As { loc: EId "i", val: EBinop PoAdd (EId "i") (EConst $ VInt 1) }
-    ]
-  , ProgOp $ As { loc: EId "a", val: ECall "foo" $
-      fromFoldable [EBinop PoAdd (EId "x") (EConst $ VInt 1)] }
-  , ProgOp $ Call "printf" $ fromFoldable $ map (EConst <<< VInt) [0,1,2]
-  , ProgOp $ As { loc: EId "ar", val: EConst $ VArray $ map VInt [0,0,0,0,0,0] }
-  , ProgOp $ Call "fib" $ fromFoldable [EId "ar", EConst $ VInt 6]
-  , ProgOp $ Ret $ EConst $ VInt 0
-  ]
-
-test_prog_foo :: ProgF
-test_prog_foo = ProgSeq $ fromFoldable
-  [ ProgOp $ As { loc: EId "i", val: EBinop PoAdd (EId "i") (EConst $ VInt 6) }
-  , ProgOp $ Ret $ EBinop PoAdd (EId "i") (EConst $ VInt 2)
-  , ProgOp $ As { loc: EId "i", val: EConst $ VInt 4 }
-  ]
-
-test_prog_fib :: ProgF
-test_prog_fib = ProgSeq $ fromFoldable
-  [ ProgOp $ As { loc: EId "i", val: EConst $ VInt 0 }
-  , ProgWhile (EBinop PoLT (EId "i") (EId "len")) $ ProgSeq $ fromFoldable
-    [ ProgOp $ As { loc: ESubscr (EId "a") (EId "i"), val: EId "i" }
-    , ProgOp $ As { loc: EId "i", val: EBinop PoAdd (EId "i") (EConst $ VInt 1) }
-    ]
-  ]
-
-test_prog :: Prog
-test_prog = fromFoldable
-  [ { fname: "main", argns: Argdef Nil, code: test_prog_main }
-  , { fname: "foo", argns: Argdef $ fromFoldable ["i"], code: test_prog_foo }
-  , { fname: "fib", argns: Argdef $ fromFoldable ["a", "len"], code: test_prog_fib }
-  ]
--}
-
 stdlib :: Prog
 stdlib = fromFoldable
   [ { fname: "printf", argns: Argvar $ fromFoldable ["format"], code: stdlib_printf }
