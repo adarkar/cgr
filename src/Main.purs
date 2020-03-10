@@ -16,6 +16,7 @@ import Data.Map as Map
 import Data.Array (updateAt)
 import Data.Array as A
 import Data.Char (toCharCode, fromCharCode)
+import Data.Int.Bits as IB
 import Data.String (split, joinWith)
 import Data.String.Pattern (Pattern(..))
 import Data.String.CodeUnits (fromCharArray)
@@ -73,15 +74,33 @@ instance showLVal :: Show LVal where
   show (LVAryEl frid id ix) = "#ref[(" <> show frid <> ") " <> id <> "[" <> show ix <> "]]"
 
 data PrimopBin =
-  PoAdd | PoMul | PoLT
+    PoAdd | PoSub | PoMul | PoDiv | PoMod
+  | PoEq | PoNeq | PoLT | PoLTE | PoGT | PoGTE
+  | PoShL | PoShR | PoBitand | PoBitor | PoBitxor
+  | PoAnd | PoOr
 
-data PrimopUn = PoNeg
+data PrimopUn = PoNeg | PoNot | PoBitnot
 
 primopBin :: PrimopBin -> Int -> Int -> Int
 primopBin op = case op of
   PoAdd -> (+)
+  PoSub -> (-)
   PoMul -> (*)
+  PoDiv -> (/)
+  PoMod -> mod
+  PoEq -> \a b -> if a == b then 1 else 0
+  PoNeq -> \a b -> if a /= b then 1 else 0
   PoLT -> \a b -> if a < b then 1 else 0
+  PoLTE -> \a b -> if a <= b then 1 else 0
+  PoGT -> \a b -> if a > b then 1 else 0
+  PoGTE -> \a b -> if a >= b then 1 else 0
+  PoShL -> IB.shl
+  PoShR -> IB.shr
+  PoBitand -> IB.and
+  PoBitor -> IB.or
+  PoBitxor -> IB.xor
+  PoAnd -> \a b -> if a /= 0 && b /= 0 then 1 else 0
+  PoOr -> \a b -> if a == 0 && b == 0 then 0 else 1
 
 data Expr =
     EId String
@@ -382,19 +401,46 @@ parse input = case runState (runParserT input prog)
         ]
 
       expr_tree :: ParP Expr
-      expr_tree = do
-        PE.buildExprParser
-          [ [ PE.Prefix $ PS.string "++" $> EIncr EIPre EIInc
-            , PE.Prefix $ PS.string "--" $> EIncr EIPre EIDec
-            ]
-          , [ PE.Postfix $ PS.string "++" $> EIncr EIPost EIInc
-            , PE.Postfix $ PS.string "--" $> EIncr EIPost EIDec
-            ]
-          , [ PE.Infix (tkc '*' $> EBinop PoMul) PE.AssocRight ]
-          , [ PE.Infix (tkc '+' $> EBinop PoAdd) PE.AssocRight ]
-          , [ PE.Infix (tkc '<' $> EBinop PoLT) PE.AssocRight ]
-          , [ PE.Infix (tkc '=' $> EAs) PE.AssocRight ]
-          ] expr_base
+      expr_tree = PE.buildExprParser
+        [ [ PE.Prefix $ long "++" $> EIncr EIPre EIInc
+          , PE.Prefix $ long "--" $> EIncr EIPre EIDec
+          ]
+        , [ PE.Postfix $ long "++" $> EIncr EIPost EIInc
+          , PE.Postfix $ long "--" $> EIncr EIPost EIDec
+          ]
+        , [ PE.Prefix $ tkc '~' $> EUnop PoBitnot
+          , PE.Prefix $ tkc '!' $> EUnop PoNot
+          , PE.Prefix $ tkc '-' $> EUnop PoNeg
+          ]
+        , [ PE.Infix (tkc '*' $> EBinop PoMul) PE.AssocRight
+          , PE.Infix (tkc '/' $> EBinop PoDiv) PE.AssocRight
+          , PE.Infix (tkc '%' $> EBinop PoMod) PE.AssocRight
+          ]
+        , [ PE.Infix (tkc '+' $> EBinop PoAdd) PE.AssocRight
+          , PE.Infix (tkc '-' $> EBinop PoSub) PE.AssocRight
+          ]
+        , [ PE.Infix (long "<<" $> EBinop PoShL) PE.AssocRight
+          , PE.Infix (long ">>" $> EBinop PoShR) PE.AssocRight
+          ]
+        , [ PE.Infix (long ">=" $> EBinop PoGTE) PE.AssocRight
+          , PE.Infix (long "<=" $> EBinop PoLTE) PE.AssocRight
+          , PE.Infix (tkc '>' $> EBinop PoGT) PE.AssocRight
+          , PE.Infix (tkc '<' $> EBinop PoLT) PE.AssocRight
+          ]
+        , [ PE.Infix (long "==" $> EBinop PoEq) PE.AssocRight
+          , PE.Infix (long "!=" $> EBinop PoNeq) PE.AssocRight
+          ]
+        , [ PE.Infix ((PC.lookAhead (PS.string "&&") <|> (tkc '&' $> "")) $> EBinop PoBitand) PE.AssocRight ]
+        , [ PE.Infix (tkc '^' $> EBinop PoBitxor) PE.AssocRight ]
+        , [ PE.Infix ((PC.lookAhead (PS.string "||") <|> (tkc '|' $> "")) $> EBinop PoBitor) PE.AssocRight ]
+        , [ PE.Infix (long "&&" $> EBinop PoAnd) PE.AssocRight ]
+        , [ PE.Infix (long "||" $> EBinop PoOr) PE.AssocRight ]
+        -- ? :
+        , [ PE.Infix (tkc '=' $> EAs) PE.AssocRight ]
+        -- , comma op
+        ] expr_base
+        where
+        long op = PS.string op <* PS.skipSpaces
 
     stmt :: ParP ProgF
     stmt = PC.choice
