@@ -192,12 +192,14 @@ writelval lv v = case lv of
     frameput frid $ fr { env = env' }
   LVAryEl frid id ix -> do
     fr <- frameget frid
-    let env' = Map.update up id fr.env
-    frameput frid $ fr { env = env' }
-    where
-      up ary = case ary of
-        VArray ary' -> VArray <$> updateAt ix v ary'
-        _ -> Nothing
+    case Map.lookup id fr.env of
+      Just (VArray ary) -> do
+        case VArray <$> updateAt ix v ary of
+          Just ary' -> do
+            let env' = Map.insert id ary' fr.env
+            frameput frid $ fr { env = env' }
+          _ -> throwError "write array index out of bounds"
+      _ -> throwError "write array element invalid array"
 
 data ProgF =
     ProgExpr Expr
