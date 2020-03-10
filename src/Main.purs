@@ -254,6 +254,7 @@ preprocessor inp =
         pure $ do
           modify_ $ Map.insert id $ fromMaybe "" v
           pure ""
+    , PS.string "#" *> pure (pure "")
     , pure <$> fold <$> manyRec expand
     ]
     where
