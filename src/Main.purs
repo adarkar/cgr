@@ -18,7 +18,7 @@ import Data.Array as A
 import Data.Char (toCharCode, fromCharCode)
 import Data.String.CodeUnits (fromCharArray)
 import Data.String.CodeUnits as SCU
-import Data.Tuple (Tuple(..), lookup, snd)
+import Data.Tuple (Tuple(..), lookup, fst, snd)
 -- import Data.Unfoldable
 import Data.Foldable (for_)
 import Data.Traversable (for, traverse)
@@ -43,8 +43,8 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Aff as HA
 import Halogen.VDom.Driver (runUI)
-
 import Web.HTML.HTMLTextAreaElement as HTextArea
+import Web.HTML.HTMLSelectElement as HSelect
 
 data Val =
     VVoid
@@ -543,6 +543,7 @@ type HState =
 data Query a
   = Step Int a
   | HRun a
+  | HLoad a
   | IsOn (HState -> a)
 
 type Input = Unit
@@ -577,12 +578,13 @@ myComp =
             <> "padding-bottom: 20px;"
         ]
         [ HH.div
-            [ HP.attr (HC.AttrName "style")
-                $  "display: inline-block;"
-                <> "vertical-align: top;"
-                <> "margin-left: 2px;"
-                <> "margin-right: 2px;"
-            ]
+          [ HP.attr (HC.AttrName "style")
+              $  "display: inline-block;"
+              <> "vertical-align: top;"
+              <> "margin-left: 2px;"
+              <> "margin-right: 2px;"
+          ]
+          [ HH.div_
             [ HH.textarea
               [ HP.value state.text
               , HP.ref $ H.RefLabel "editor"
@@ -591,70 +593,81 @@ myComp =
               , HP.cols 40
               ]
             ]
+          , HH.div_
+            [ HH.text "Select example "
+            , HH.select
+              [ HP.ref $ H.RefLabel "examplesel" ]
+              $ toUnfoldable $ flip map examples $ \x ->
+                  HH.option_ [ HH.text $ fst x ]
+            , HH.button
+              [ HE.onClick $ HE.input_ HLoad ]
+              [ HH.text "load" ]
+            ]
+          ]
         , HH.div
-            [ HP.attr (HC.AttrName "style")
-                $  "display: inline-block;"
-                <> "vertical-align: top;"
-                <> "margin-left: 2px;"
-                <> "margin-right: 2px;"
+          [ HP.attr (HC.AttrName "style")
+              $  "display: inline-block;"
+              <> "vertical-align: top;"
+              <> "margin-left: 2px;"
+              <> "margin-right: 2px;"
+          ]
+          [ HH.button
+            [ HE.onClick $ HE.input_ HRun
+            , HP.attr (HC.AttrName "style")
+                $  "width: 50px;"
+                <> "height: 50px;"
+                <> "background: chartreuse"
             ]
-            [ HH.button
-                [ HE.onClick $ HE.input_ $ HRun
-                , HP.attr (HC.AttrName "style")
-                    $  "width: 50px;"
-                    <> "height: 50px;"
-                    <> "background: chartreuse"
-                ]
-                [ HH.text "run" ] ]
+            [ HH.text "run" ] ]
         , HH.div
-            [ HP.attr (HC.AttrName "style")
-                $  "display: inline-block;"
-                <> "vertical-align: top;"
-                <> "width: 250px;"
-                <> "margin-left: 2px;"
-                <> "margin-right: 2px;"
-                <> "background: black;"
-            ]
-            [ HH.div
-                [ HP.attr (HC.AttrName "style")
-                    $  "background: purple;"
-                    <> "color: white;"
-                    <> "margin: 5px;"
-                ]
-                [ HH.text "Output stream"]
-            , HH.div
-                [ HP.attr (HC.AttrName "style")
-                    $  "font-family: monospace;"
-                    <> "color: lime;"
-                    <> "padding: 5px;"
-                ]
-                [ HH.pre
-                  [ HP.attr (HC.AttrName "style") "margin: 0px;" ]
-                  [ HH.text out ]
-                ]
-            ]
+          [ HP.attr (HC.AttrName "style")
+              $  "display: inline-block;"
+              <> "vertical-align: top;"
+              <> "width: 250px;"
+              <> "margin-left: 2px;"
+              <> "margin-right: 2px;"
+              <> "background: black;"
+          ]
+          [ HH.div
+              [ HP.attr (HC.AttrName "style")
+                  $  "background: purple;"
+                  <> "color: white;"
+                  <> "margin: 5px;"
+              ]
+              [ HH.text "Output stream"]
+          , HH.div
+              [ HP.attr (HC.AttrName "style")
+                  $  "font-family: monospace;"
+                  <> "color: lime;"
+                  <> "padding: 5px;"
+              ]
+              [ HH.pre
+                [ HP.attr (HC.AttrName "style") "margin: 0px;" ]
+                [ HH.text out ]
+              ]
+          ]
         , HH.div
-            [ HP.attr (HC.AttrName "style")
-                $  "display: inline-block;"
-                <> "vertical-align: top;"
-                <> "margin-left: 2px;"
-                <> "margin-right: 2px;"
-            ]
-            [ HH.div_ [ HH.text "Time travel" ]
-            , HH.div_
-                [ HH.button [ HE.onClick (HE.input_ $ Step (-1)) ] [ HH.text "<" ]
-                , HH.text $ " " <> show state.tstep <> " "
-                , HH.button [ HE.onClick (HE.input_ $ Step 1) ] [ HH.text ">" ]
-                ]
-            , HH.div
-                [ HP.attr (HC.AttrName "style")
-                    "height: 300px;"
-                ]
-                [ case tr !! state.tstep of
-                    Just conf -> r_timestep Nothing conf
-                    Nothing -> HH.div_ []
-                ]
-            ]
+          [ HP.attr (HC.AttrName "style")
+              $  "display: inline-block;"
+              <> "vertical-align: top;"
+              <> "margin-left: 2px;"
+              <> "margin-right: 2px;"
+          ]
+          [ HH.div_ [ HH.text "Time travel" ]
+          , HH.div_
+              [ HH.button [ HE.onClick (HE.input_ $ Step (-1)) ] [ HH.text "<" ]
+              , HH.text $ " " <> show state.tstep <> " "
+              , HH.button [ HE.onClick (HE.input_ $ Step 1) ] [ HH.text ">" ]
+              ]
+          , HH.div
+              [ HP.attr (HC.AttrName "style")
+                  "height: 300px;"
+              ]
+              [ case tr !! state.tstep of
+                  Just conf -> r_timestep Nothing conf
+                  Nothing -> HH.div_ []
+              ]
+          ]
         ]
       , HH.div
           [ HP.attr (HC.AttrName "style")
@@ -720,7 +733,21 @@ myComp =
           Just t -> do
             text <- H.liftEffect $ HTextArea.value t
             H.put { text: text, tstep: 0 }
-            -- H.liftEffect $ HTextArea.setValue "ciao" t
+      pure next
+    HLoad next -> do
+      H.getHTMLElementRef (H.RefLabel "examplesel") >>= case _ of
+        Nothing -> pure unit
+        Just el -> case HSelect.fromHTMLElement el of
+          Nothing -> pure unit
+          Just s -> do
+            H.getHTMLElementRef (H.RefLabel "editor") >>= case _ of
+              Nothing -> pure unit
+              Just el2 -> case HTextArea.fromHTMLElement el2 of
+                Nothing -> pure unit
+                Just t -> do
+                  v <- H.liftEffect $ HSelect.value s
+                  H.liftEffect $ HTextArea.setValue
+                    (fromMaybe "" $ lookup v examples) t
       pure next
     IsOn reply -> do
       state <- H.get
