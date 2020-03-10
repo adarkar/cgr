@@ -358,6 +358,11 @@ parse input = case runState (runParserT input prog)
           len <- expr
           _ <- tkc ']'
           pure $ ProgAllocAry id len
+      , PC.try $ do
+          id <- ident
+          _ <- tkc '='
+          e <- expr
+          pure $ ProgExpr $ EAs (EId id) e
       , ProgAllocVar <$> ident
       ]
 
@@ -392,8 +397,7 @@ int main() {
 """
   , Tuple "La risposta" """
 int main() {
-  int x;
-  x = 42;
+  int x = 42;
   printf("x: %d\n", x);
 }
 """
