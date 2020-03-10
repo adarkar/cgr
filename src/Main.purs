@@ -102,6 +102,12 @@ primopBin op = case op of
   PoAnd -> \a b -> if a /= 0 && b /= 0 then 1 else 0
   PoOr -> \a b -> if a == 0 && b == 0 then 0 else 1
 
+primopUn :: PrimopUn -> Int -> Int
+primopUn op = case op of
+  PoNeg -> \a -> -a
+  PoNot -> \a -> if a == 0 then 1 else 0
+  PoBitnot -> \a -> IB.complement a
+
 data Expr =
     EId String
   | EConst Val
@@ -150,7 +156,11 @@ ceval e = case e of
           _ -> VVoid
         _ -> VVoid
     pure r
-  EUnop _ _ -> pure VVoid
+  EUnop op a -> do
+    av <- ceval a
+    pure $ case av of
+      VInt avi -> VInt $ primopUn op avi
+      _ -> VVoid
   ETernop _ _ _ -> pure VVoid
   EIncr pp inc expr -> do
     let
