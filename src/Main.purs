@@ -362,6 +362,13 @@ parse input = case runState (runParserT input prog)
           pure $ ProgAllocAry id len
       , PC.try $ do
           id <- ident
+          _ <- tkc '[' *> tkc ']' *> tkc '='
+          _ <- tkc '{'
+          vs <- PC.sepBy number $ tkc ','
+          _ <- tkc '}'
+          pure $ ProgExpr $ EAs (EId id) $ EConst $ VArray $ toUnfoldable $ map VInt vs
+      , PC.try $ do
+          id <- ident
           _ <- tkc '='
           e <- expr
           pure $ ProgExpr $ EAs (EId id) e
