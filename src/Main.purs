@@ -379,57 +379,25 @@ parse input = case runState (runParserT input prog)
 hello_world :: String
 hello_world = """
 int main() {
-  printf("Hello world!");
+  printf("Hello world!\n");
 }
 """
 
-test_prog_2 :: String
-test_prog_2 = """
-int foo (x) {
-  return x+2;
-}
-
-int main(foo, bar) {
-  h = "hello";
-  q = h[0];
-  h[0] = 72;
-  x = 11;
-  i = 8;
-  x = x + i;
-  i = 10 + x * 2;
-  i = (10+x) * 2;
-  printf("ciao ");
-  printf(h);
-  printf(" i: %d, x: %d ", i, x);
-  i = 0;
-  while (i < 3) {
-    i = i+1;
-  }
-  x = foo(i);
+examples :: List (Tuple String String)
+examples = fromFoldable
+  [ Tuple "Hello world" """
+int main() {
+  printf("Hello world!\n");
 }
 """
-
-test_prog_1 :: String
-test_prog_1 = """
-int foo (x) {
-  i = 0;
-  y = 0;
-  while (i < x+1) {
-    y = y+i;
-    i = i+1;
-  }
-  return y;
-}
-
-int main(foo, bar) {
-  h = "hello";
-  h[0] = 72;
-  printf(h);
-
-  x = foo(3);
-  printf(" x: %d", x);
+  , Tuple "La risposta" """
+int main() {
+  int x;
+  x = 42;
+  printf("x: %d\n", x);
 }
 """
+  ]
 
 type RunS = { config :: Config, nxfrid :: Int }
 
