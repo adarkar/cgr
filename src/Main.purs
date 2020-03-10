@@ -92,6 +92,10 @@ data Expr =
   | EBinop PrimopBin Expr Expr
   | EUnop PrimopUn Expr
   | ETernop Expr Expr Expr
+  | EIncr EIPrePost EIIncDec Expr
+
+data EIPrePost = EIPre | EIPost
+data EIIncDec = EIInc | EIDec
 
 instance showExpr :: Show Expr where
   show (EId id) = show id
@@ -129,6 +133,16 @@ ceval e = case e of
     pure r
   EUnop _ _ -> pure VVoid
   ETernop _ _ _ -> pure VVoid
+  EIncr pp inc expr -> do
+    let
+      adder = case inc of
+        EIInc -> 1
+        EIDec -> -1
+      op = EAs expr $ EBinop PoAdd expr (EConst $ VInt adder)
+    lv <- leval expr
+    case pp of
+      EIPre -> ceval op *> readlval lv
+      EIPost -> readlval lv <* ceval op
 
 leval :: Expr -> RunM LVal
 leval e = case e of
@@ -370,7 +384,13 @@ parse input = case runState (runParserT input prog)
       expr_tree :: ParP Expr
       expr_tree = do
         PE.buildExprParser
-          [ [ PE.Infix (tkc '*' $> EBinop PoMul) PE.AssocRight ]
+          [ [ PE.Prefix $ PS.string "++" $> EIncr EIPre EIInc
+            , PE.Prefix $ PS.string "--" $> EIncr EIPre EIDec
+            ]
+          , [ PE.Postfix $ PS.string "++" $> EIncr EIPost EIInc
+            , PE.Postfix $ PS.string "--" $> EIncr EIPost EIDec
+            ]
+          , [ PE.Infix (tkc '*' $> EBinop PoMul) PE.AssocRight ]
           , [ PE.Infix (tkc '+' $> EBinop PoAdd) PE.AssocRight ]
           , [ PE.Infix (tkc '<' $> EBinop PoLT) PE.AssocRight ]
           , [ PE.Infix (tkc '=' $> EAs) PE.AssocRight ]
