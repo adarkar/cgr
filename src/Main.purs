@@ -145,7 +145,7 @@ ceval e = case e of
     v <- ceval val
     writelval lv v
     pure v
-  ECall id args -> runm (ProgCall id args) pure
+  ECall id args -> runm (ProgCall id args) pure pure pure
   EBinop op a b -> do
     av <- ceval a
     bv <- ceval b
@@ -253,11 +253,14 @@ data ProgF =
   | ProgAllocVar String
   | ProgAllocAry String Expr
   | ProgIOW
-  | ProgIOR String (List Int)
+  | ProgIOR
   | ProgSeq (List ProgF)
   | ProgWhile Expr ProgF
   | ProgIf Expr ProgF
   | ProgIfElse Expr ProgF ProgF
+  | ProgSwitch Expr (List (Tuple (Maybe Val) ProgF)) -- maybe used to encode default
+  | ProgBreak
+  | ProgContinue
 
 data Argdef =
     Argdef (List String)
@@ -475,8 +478,29 @@ parse input = case runState (runParserT input prog)
             Nothing -> ProgIf c b
             Just b' -> ProgIfElse c b b'
       , PC.try $ do
+          PS.string "switch" *> PS.skipSpaces
+          c <- tkc '(' *> expr <* tkc ')'
+          _ <- tkc '{'
+          xs <- manyRec $ PC.choice
+            [ do
+                PS.string "case" *> PS.skipSpaces
+                n <- number
+                _ <- tkc ':'
+                b <- manyRec stmt
+                pure $ Tuple (Just $ VInt n) $ ProgSeq b
+            , do
+                PS.string "default" *> PS.skipSpaces
+                _ <- tkc ':'
+                b <- manyRec stmt
+                pure $ Tuple Nothing $ ProgSeq b
+            ]
+          _ <- tkc '}'
+          pure $ ProgSwitch c xs
+      , PC.try $ do
           PS.string "return" *> PC.skipMany1 PT.space
           ProgRet <$> expr <* tkc ';'
+      , PC.try $ PS.string "break" *> PS.skipSpaces *> tkc ';' $> ProgBreak
+      , PC.try $ PS.string "continue" *> PS.skipSpaces *> tkc ';' $> ProgContinue
       , ProgExpr <$> expr <* tkc ';'
       ]
 
@@ -608,9 +632,10 @@ printf ft xs = snd $ execRWS (runParserT ft p) unit xs
         _ -> pure unit
 
 type RunM a = ExceptT String (ContT Unit (RWS Prog RunW RunS)) a
+type RK = Val -> RunM Val
 
-runm :: ProgF -> (Val -> RunM Val) -> RunM Val
-runm p k = case p of
+runm :: ProgF -> RK -> RK -> RK -> RunM Val
+runm p kr kbr kcn = case p of
   ProgExpr e -> ceval e
   ProgCall id args -> do
     prog <- ask
@@ -631,7 +656,7 @@ runm p k = case p of
           y = Config $ fr : c
         trace y
         put { config: y, nxfrid: nxfrid + 1 }
-        v <- callCC $ runm f
+        v <- callCC $ \kr' -> runm f kr' kbr kcn
         modify_ $ \s ->
           let
             Config c' = s.config
@@ -643,7 +668,7 @@ runm p k = case p of
         gets _.config >>= trace
         pure v
       Nothing -> pure VVoid -- should be unreachable (func name not in prog)
-  ProgRet e -> ceval e >>= k
+  ProgRet e -> ceval e >>= kr
   ProgAllocVar id -> do
     fr <- framegettop
     let env' = Map.insert id VUndef fr.env
@@ -680,29 +705,48 @@ runm p k = case p of
           _ -> throwError "printf: format string is not a valid string"
       _ -> throwError "printf: format string is not a valid ref"
     pure VVoid
+  ProgIOR -> pure VVoid
   ProgSeq xs -> do
-    for_ xs $ \x -> runm x k
+    for_ xs $ \x -> runm x kr kbr kcn
     pure VVoid
   ProgWhile e x -> do
     b <- ceval e
     case b of
       VInt 0 -> pure VVoid
-      _ -> runm x k *> runm p k
+      _ -> do
+        callCC $ \kbr' -> do
+          _ <- callCC $ \kcn' -> runm x kr kbr' kcn'
+          runm p kr kbr' kcn
   ProgIf e x -> do
     b <- ceval e
     case b of
       VInt 0 -> pure VVoid
-      _ -> runm x k
+      _ -> runm x kr kbr kcn
   ProgIfElse e x x' -> do
     b <- ceval e
     case b of
-      VInt 0 -> runm x' k
-      _ -> runm x k
-  _ -> pure VVoid
+      VInt 0 -> runm x' kr kbr kcn
+      _ -> runm x kr kbr kcn
+  ProgSwitch e bs -> do
+    swv <- ceval e
+    callCC $ \kbr' -> do
+      let
+        go true xs = runm (ProgSeq (map snd xs)) kr kbr' kcn
+        go false Nil = pure VVoid
+        go false xs@((Tuple Nothing _):_) = go true xs
+        go false all@((Tuple (Just v) _) : xs) = case swv, v of
+            VInt swvi, VInt vi ->
+              if vi == swvi
+              then go true all
+              else go false xs
+            _, _ -> pure VVoid
+      go false bs
+  ProgBreak -> kbr VVoid
+  ProgContinue -> kcn VVoid
 
 test_runm :: Tuple Prog Config -> RWSResult RunS Unit RunW
 test_runm (Tuple prog c) =
-  let r = runExceptT $ runm (ProgCall "main" Nil) pure
+  let r = runExceptT $ runm (ProgCall "main" Nil) pure pure pure
   in runRWS
     (runContT r (\_ -> pure unit))
     (prog <> stdlib)
