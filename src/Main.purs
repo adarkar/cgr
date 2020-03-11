@@ -426,29 +426,29 @@ parse input = case runState (runParserT input prog)
           , PE.Prefix $ tkc '!' $> EUnop PoNot
           , PE.Prefix $ tkc '-' $> EUnop PoNeg
           ]
-        , [ PE.Infix (tkc '*' $> EBinop PoMul) PE.AssocRight
-          , PE.Infix (tkc '/' $> EBinop PoDiv) PE.AssocRight
-          , PE.Infix (tkc '%' $> EBinop PoMod) PE.AssocRight
+        , [ PE.Infix (tkc '*' $> EBinop PoMul) PE.AssocLeft
+          , PE.Infix (tkc '/' $> EBinop PoDiv) PE.AssocLeft
+          , PE.Infix (tkc '%' $> EBinop PoMod) PE.AssocLeft
           ]
-        , [ PE.Infix (tkc '+' $> EBinop PoAdd) PE.AssocRight
-          , PE.Infix (tkc '-' $> EBinop PoSub) PE.AssocRight
+        , [ PE.Infix (tkc '+' $> EBinop PoAdd) PE.AssocLeft
+          , PE.Infix (tkc '-' $> EBinop PoSub) PE.AssocLeft
           ]
-        , [ PE.Infix (long "<<" $> EBinop PoShL) PE.AssocRight
-          , PE.Infix (long ">>" $> EBinop PoShR) PE.AssocRight
+        , [ PE.Infix (long "<<" $> EBinop PoShL) PE.AssocLeft
+          , PE.Infix (long ">>" $> EBinop PoShR) PE.AssocLeft
           ]
-        , [ PE.Infix (long ">=" $> EBinop PoGTE) PE.AssocRight
-          , PE.Infix (long "<=" $> EBinop PoLTE) PE.AssocRight
-          , PE.Infix (tkc '>' $> EBinop PoGT) PE.AssocRight
-          , PE.Infix (tkc '<' $> EBinop PoLT) PE.AssocRight
+        , [ PE.Infix (long ">=" $> EBinop PoGTE) PE.AssocLeft
+          , PE.Infix (long "<=" $> EBinop PoLTE) PE.AssocLeft
+          , PE.Infix (tkc '>' $> EBinop PoGT) PE.AssocLeft
+          , PE.Infix (tkc '<' $> EBinop PoLT) PE.AssocLeft
           ]
-        , [ PE.Infix (long "==" $> EBinop PoEq) PE.AssocRight
-          , PE.Infix (long "!=" $> EBinop PoNeq) PE.AssocRight
+        , [ PE.Infix (long "==" $> EBinop PoEq) PE.AssocLeft
+          , PE.Infix (long "!=" $> EBinop PoNeq) PE.AssocLeft
           ]
-        , [ PE.Infix ((PC.lookAhead (PS.string "&&") <|> (tkc '&' $> "")) $> EBinop PoBitand) PE.AssocRight ]
-        , [ PE.Infix (tkc '^' $> EBinop PoBitxor) PE.AssocRight ]
-        , [ PE.Infix ((PC.lookAhead (PS.string "||") <|> (tkc '|' $> "")) $> EBinop PoBitor) PE.AssocRight ]
-        , [ PE.Infix (long "&&" $> EBinop PoAnd) PE.AssocRight ]
-        , [ PE.Infix (long "||" $> EBinop PoOr) PE.AssocRight ]
+        , [ PE.Infix ((PC.lookAhead (PS.string "&&") <|> (tkc '&' $> "")) $> EBinop PoBitand) PE.AssocLeft ]
+        , [ PE.Infix (tkc '^' $> EBinop PoBitxor) PE.AssocLeft ]
+        , [ PE.Infix ((PC.lookAhead (PS.string "||") <|> (tkc '|' $> "")) $> EBinop PoBitor) PE.AssocLeft ]
+        , [ PE.Infix (long "&&" $> EBinop PoAnd) PE.AssocLeft ]
+        , [ PE.Infix (long "||" $> EBinop PoOr) PE.AssocLeft ]
         -- ? :
         , [ PE.Infix (tkc '=' $> EAs) PE.AssocRight ]
         -- , comma op
@@ -528,9 +528,11 @@ parse input = case runState (runParserT input prog)
       [ PC.try $ do
           id <- ident
           _ <- tkc '['
-          len <- expr
+          len <- PC.optionMaybe expr
           _ <- tkc ']'
-          pure $ ProgAllocAry id len
+          pure $ case len of
+            Just len' -> ProgAllocAry id len'
+            Nothing -> ProgAllocVar id
       , PC.try $ do
           id <- ident
           _ <- tkc '[' *> tkc ']' *> tkc '='
@@ -590,6 +592,114 @@ int main() {
     printf("tri(%d) = %d\n", i, tri(i));
     i = i+1;
   }
+}
+"""
+  , Tuple "Euclide - ricorsivo" """
+int gcd(int a, int b) {
+  if (b == 0) return a;
+  printf("GCD(%d,%d) = ?\n", a, b);
+  int r = gcd(b, a%b);
+  printf("GCD(%d,%d) = %d\n", a, b, r);
+  return r;
+}
+
+int main() {
+  int a=11, b=19;
+  printf("Result: %d\n", gcd(a,b));
+}
+"""
+  , Tuple "Euclide - iterativo" """
+int gcd(int a, int b) {
+  int t;
+  int a0=a, b0=b;
+  while (b != 0) {
+    printf("Current state: %d,%d\n", a, b);
+    t = a;
+    a = b;
+    b = t % b;
+  }
+  printf("GCD(%d,%d) = %d\n", a0, b0, a);
+  return a;
+}
+
+int main() {
+  int a=11, b=19;
+  printf("Result: %d\n", gcd(a,b));
+}
+"""
+  , Tuple "Array" """
+void double(int a[], int len) {
+  for (i=0; i<len; i++) {
+    a[i] = 2*a[i];
+  }
+}
+
+void print(int a[], int len) {
+  printf("[");
+  for (i=0; i<len-1; i++)
+    printf("%d, ", a[i]);
+  printf("%d]\n", a[i]);
+}
+
+int main() {
+  int a[] = {1,2,3,4,5,6,7};
+  double(a, 7);
+  print(a, 7);
+
+  double(a, 3);
+  print(a, 7);
+  print(a, 5);
+}
+"""
+  , Tuple "Tartaglia" """
+void tartaglia(int in[], int out[], int len) {
+  out[0] = 1;
+  for (i=1; i<len; i++) {
+    out[i] = in[i-1] + in[i];
+  }
+  out[i] = 1;
+}
+
+void print(int a[], int len) {
+  printf("[");
+  for (i=0; i<len-1; i++)
+    printf("%d, ", a[i]);
+  printf("%d]\n", a[i]);
+}
+
+int main() {
+  int n=10, i;
+  int a[n];
+  int b[n];
+
+  for (i=0; i<n; i++) {
+    if (i%2) {
+      tartaglia(b, a, i);
+      print(a, i+1);
+    }
+    else {
+      tartaglia(a, b, i);
+      print(b, i+1);
+    }
+  }
+}
+"""
+  , Tuple "Natale" """
+void pr(int x[], int n) {
+  int i;
+  for(i=0; i<n; i++) printf(x);
+}
+
+int main() {
+  int n=6, i, j;
+
+  for (i=0; i<n; i++) {
+    pr(" ", n-i-1);
+    pr("*", 2*i+1);
+    printf("\n");
+  }
+  pr(" ", n-1);
+  printf("#\n");
 }
 """
   ]
@@ -862,10 +972,11 @@ myComp =
           [ HP.attr (HC.AttrName "style")
               $  "display: inline-block;"
               <> "vertical-align: top;"
-              <> "width: 250px;"
+              <> "width: 350px;"
               <> "margin-left: 2px;"
               <> "margin-right: 2px;"
               <> "background: black;"
+              <> "overflow-x: scroll"
           ]
           [ HH.div
               [ HP.attr (HC.AttrName "style")
