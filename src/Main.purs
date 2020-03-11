@@ -879,19 +879,27 @@ runm p kr kbr kcn = case p of
   ProgBreak -> kbr VVoid
   ProgContinue -> kcn VVoid
 
-test_runm :: Tuple Prog Config -> RWSResult RunS Unit RunW
-test_runm (Tuple prog c) =
-  let r = runExceptT $ runm (ProgCall "main" Nil) pure pure pure
-  in runRWS
-    (runContT r (\_ -> pure unit))
-    (prog <> stdlib)
-    { config: c, nxfrid: 1 }
+prepare :: String -> Maybe (Tuple Prog Config)
+prepare = parse <<< preprocessor
 
-runm2lconfig :: RWSResult RunS Unit RunW -> List (Tuple Config String)
-runm2lconfig r = let RWSResult s a w = r in foldRunw w
+type Trace = List (Tuple Config String)
+
+execprog :: Tuple Prog Config -> Trace
+execprog p =
+  let RWSResult s a w = go p
+  in foldRunw w
+  where
+  go :: Tuple Prog Config -> RWSResult RunS Unit RunW
+  go (Tuple prog static) =
+    let r = runExceptT $ runm (ProgCall "main" Nil) pure pure pure
+    in runRWS
+      (runContT r (\_ -> pure unit))
+      (prog <> stdlib)
+      { config: static, nxfrid: 1 }
 
 type HState =
   { text :: String
+  , trace :: Trace
   , tstep :: Int
   }
 
@@ -917,16 +925,14 @@ myComp =
   where
 
   initialState :: HState
-  initialState = { text: fromMaybe "" $ snd <$> head examples, tstep: 0 }
+  initialState =
+    let
+      text = fromMaybe "" $ snd <$> head examples
+      tr = fromMaybe Nil $ execprog <$> prepare text
+    in { text: text , trace: tr , tstep: 0 }
 
   render :: HState -> H.ComponentHTML Query
   render state =
-    let
-      progtext = preprocessor state.text
-      tr = case parse progtext of
-        Just x -> runm2lconfig $ test_runm x
-        Nothing -> Nil
-    in
     HH.div_ $
       [ HH.div
         [ HP.attr (HC.AttrName "style")
@@ -1001,7 +1007,7 @@ myComp =
               ]
               [ HH.pre
                 [ HP.attr (HC.AttrName "style") "margin: 0px;" ]
-                [ HH.text $ fromMaybe "" $ snd <$> tr !! state.tstep ]
+                [ HH.text $ fromMaybe "" $ snd <$> state.trace !! state.tstep ]
               ]
           ]
         , HH.div
@@ -1021,7 +1027,7 @@ myComp =
               [ HP.attr (HC.AttrName "style")
                   "height: 300px;"
               ]
-              [ case tr !! state.tstep of
+              [ case state.trace !! state.tstep of
                   Just (Tuple conf _) -> r_timestep Nothing conf
                   Nothing -> HH.div_ []
               ]
@@ -1032,7 +1038,7 @@ myComp =
               $  "white-space: nowrap; overflow: scroll;"
               <> "padding-bottom: 20px;"
           ]
-          $ flip A.mapWithIndex (toUnfoldable tr)
+          $ flip A.mapWithIndex (toUnfoldable state.trace)
             $ \i (Tuple c _) -> r_timestep (Just i) c
       ]
     where
@@ -1095,7 +1101,8 @@ myComp =
           Nothing -> pure unit
           Just t -> do
             text <- H.liftEffect $ HTextArea.value t
-            H.put { text: text, tstep: 0 }
+            let tr = fromMaybe Nil $ execprog <$> prepare text
+            H.put { text: text, trace: tr, tstep: 0 }
       pure next
     HLoad next -> do
       H.getHTMLElementRef (H.RefLabel "examplesel") >>= case _ of
