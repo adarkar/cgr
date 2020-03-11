@@ -28,7 +28,7 @@ import Data.Traversable (for, traverse)
 
 import Control.Alt ((<|>))
 import Control.Monad.State (State, runState, evalState)
-import Control.Monad.RWS (RWS, tell, ask, get, gets, put, modify_, runRWS, execRWS, evalRWS, RWSResult(..))
+import Control.Monad.RWS (RWS, tell, ask, get, gets, put, modify_, runRWS, execRWS, RWSResult(..))
 import Control.Monad.Cont (ContT, callCC, runContT)
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.Trans.Class (lift)
@@ -134,7 +134,11 @@ type Frame =
   , frid :: Int
   }
 
-data Config = Config (List Frame)
+data Config = Config
+  { frs :: List Frame
+  , stdout :: String
+  , stdin :: String
+  }
 
 ceval :: Expr -> RunM Val
 ceval e = case e of
@@ -179,7 +183,7 @@ leval :: Expr -> RunM LVal
 leval e = case e of
   EId id -> do
     Config c <- gets _.config
-    case head c of
+    case head c.frs of
       Just fr -> pure $ LVAtom fr.frid id
       Nothing -> throwError "unreachable: no frames existing"
   ESubscr ar ix -> ceval ar >>= case _ of
@@ -192,25 +196,25 @@ leval e = case e of
 frameput :: Int -> Frame -> RunM Unit
 frameput frid fr' = do
   Config c <- gets _.config
-  let { init: frin, rest: frrs } = span (\fr -> fr.frid /= frid) c
+  let { init: frin, rest: frrs } = span (\fr -> fr.frid /= frid) c.frs
   case frrs of
     Nil -> throwError "frame not found"
     fr : below -> do
-      let y = Config $ frin <> singleton fr' <> below
+      let y = Config $ c{ frs = frin <> singleton fr' <> below }
       trace y
       modify_ $ _{ config = y }
 
 frameget :: Int -> RunM Frame
 frameget frid = do
   Config c <- gets _.config
-  case flip find c (\fr -> fr.frid == frid) of
+  case flip find c.frs (\fr -> fr.frid == frid) of
     Just x -> pure x
     Nothing -> throwError "frame not found"
 
 framegettop :: RunM Frame
 framegettop = do
   Config c <- gets _.config
-  case head c of
+  case head c.frs of
     Just fr -> pure fr
     Nothing -> throwError "top frame must exist"
 
@@ -333,7 +337,8 @@ parse input = case runState (runParserT input prog)
     { fr: { name: "#static", env: Map.empty, frid: 0 }
     , nxid: 0 } of
   Tuple (Left _) _ -> Nothing
-  Tuple (Right x) s -> Just $ Tuple x $ Config $ singleton s.fr
+  Tuple (Right x) s -> Just $ Tuple x $ Config
+    { frs: singleton s.fr, stdin: "", stdout: "" }
   where
     prog :: ParP Prog
     prog = someRec func
@@ -708,10 +713,11 @@ int main() {
 """
   ]
 
-type RunS = { config :: Config, nxfrid :: Int, stdin :: String }
+type RunS = { config :: Config, nxfrid :: Int }
 
-type RunW = List (Either Config String)
+type RunW = List Config
 
+{-
 foldRunw :: RunW -> List (Tuple Config String)
 foldRunw xs = snd $ evalRWS (for_ xs go) unit (Tuple (Config Nil) "")
   where
@@ -724,12 +730,15 @@ foldRunw xs = snd $ evalRWS (for_ xs go) unit (Tuple (Config Nil) "")
         Right s -> Tuple sc $ ss <> s
     put s'
     tell $ singleton s'
+-}
 
 trace :: Config -> RunM Unit
-trace c = lift <<< lift $ tell $ singleton $ Left c
+trace c = lift <<< lift $ tell $ singleton c
 
 output :: String -> RunM Unit
-output s = lift <<< lift $ tell $ singleton $ Right s
+output s = do
+  Config c <- gets _.config
+  lift <<< lift $ tell $ singleton $ Config $ c { stdout = c.stdout <> s }
 
 printf :: String -> List Val -> String
 printf ft xs = snd $ execRWS (runParserT ft p) unit xs
@@ -793,7 +802,7 @@ runm p kr kbr kcn = case p of
     argsval <- for args ceval
     case lookup id prog_fs of
       Just (Tuple as f) -> do
-        { config: Config c, nxfrid: nxfrid, stdin: stdin } <- get
+        { config: Config c, nxfrid: nxfrid } <- get
         let
           fr = case as of
             Argdef as' -> { name: id, env: Map.fromFoldable $ zip as' argsval, frid: nxfrid }
@@ -803,16 +812,17 @@ runm p kr kbr kcn = case p of
                 vargs = VArray <<< toUnfoldable $ drop (length as') argsval
                 venv = Map.insert "#varargs" vargs env
               in { name: id, env: venv, frid: nxfrid }
-          y = Config $ fr : c
+          y = Config $ c{ frs = fr : c.frs }
         trace y
-        put { config: y, nxfrid: nxfrid + 1, stdin: stdin }
+        put { config: y, nxfrid: nxfrid + 1 }
         v <- callCC $ \kr' -> runm f kr' kbr kcn
         modify_ $ \s ->
           let
             Config c' = s.config
-            c'' = Config $ case tail c' of
+            frs' = case tail c'.frs of
               Just x -> x
               Nothing -> Nil
+            c'' = Config $ c' { frs = frs' }
           in
             s { config = c'' }
         gets _.config >>= trace
@@ -870,9 +880,12 @@ runm p kr kbr kcn = case p of
               fts = fromCharArray <$> traverse (fromCharCode <=< getvint) cs
             case fts of
               Just fts' -> do
-                inp <- gets _.stdin
+                inp <- gets $ (\(Config c) -> c.stdin) <<< _.config
                 let Tuple vs inp' = scanf fts' inp
-                modify_ $ \s -> s { stdin = inp' }
+                Config c <- gets _.config
+                let c' = Config $ c { stdin = inp' }
+                modify_ $ \s -> s { config = c' }
+                trace c'
                 output $ "TEST SCANF: " <> show vs <> "\n"
                 refs <- case Map.lookup "#varargs" frtop.env of
                   Just (VArray vs') -> pure $ fromFoldable vs'
@@ -940,24 +953,22 @@ runm p kr kbr kcn = case p of
 prepare :: String -> Maybe (Tuple Prog Config)
 prepare = parse <<< preprocessor
 
-type Trace = List (Tuple Config String)
-
-execprog :: String -> Tuple Prog Config -> Trace
+execprog :: String -> Tuple Prog Config -> RunW
 execprog stdin p =
   let RWSResult s a w = go p
-  in foldRunw w
+  in w
   where
   go :: Tuple Prog Config -> RWSResult RunS Unit RunW
-  go (Tuple prog static) =
+  go (Tuple prog (Config static)) =
     let r = runExceptT $ runm (ProgCall "main" Nil) pure pure pure
     in runRWS
       (runContT r (\_ -> pure unit))
       (prog <> stdlib)
-      { config: static, nxfrid: 1, stdin: stdin }
+      { config: Config $ static { stdin = stdin }, nxfrid: 1 }
 
 type HState =
   { text :: String
-  , trace :: Trace
+  , trace :: RunW
   , tstep :: Int
   }
 
@@ -1048,7 +1059,27 @@ myComp =
                 <> "margin-left: 2px;"
                 <> "margin-right: 2px;"
             ]
-            [ HH.div
+            [ HH.div_
+                [ HH.div_ [ HH.text "Input"]
+                , HH.div
+                    [ HP.attr (HC.AttrName "style")
+                        $  "font-family: monospace;"
+                        <> "color: black;"
+                        <> "padding: 5px;"
+                    ]
+                    [ HH.div_
+                        [ HH.textarea
+                            [ HP.value "42"
+                            , HP.ref $ H.RefLabel "stdin"
+                            , HP.attr (HC.AttrName "style")
+                                $  "font-family: monospace;"
+                                <> "width: 100%;"
+                                <> "height: 100;"
+                            ]
+                        ]
+                    ]
+                ]
+            , HH.div
                 [ HP.attr (HC.AttrName "style")
                     $  "background: ivory;"
                     <> "overflow-x: scroll"
@@ -1066,16 +1097,9 @@ myComp =
                         <> "color: black;"
                         <> "padding: 5px;"
                     ]
-                    [ HH.div_
-                        [ HH.textarea
-                            [ HP.value "42"
-                            , HP.ref $ H.RefLabel "stdin"
-                            , HP.attr (HC.AttrName "style")
-                                $  "font-family: monospace;"
-                                <> "width: 100%;"
-                                <> "height: 100;"
-                            ]
-                        ]
+                    [ HH.pre
+                      [ HP.attr (HC.AttrName "style") "margin: 0px;" ]
+                      [ HH.text $ fromMaybe "" $ (\(Config c) -> c.stdin) <$> state.trace !! state.tstep ]
                     ]
                 ]
             , HH.div
@@ -1098,7 +1122,7 @@ myComp =
                     ]
                     [ HH.pre
                       [ HP.attr (HC.AttrName "style") "margin: 0px;" ]
-                      [ HH.text $ fromMaybe "" $ snd <$> state.trace !! state.tstep ]
+                      [ HH.text $ fromMaybe "" $ (\(Config c) -> c.stdout) <$> state.trace !! state.tstep ]
                     ]
                 ]
             ]
@@ -1120,7 +1144,7 @@ myComp =
                   "height: 300px;"
               ]
               [ case state.trace !! state.tstep of
-                  Just (Tuple conf _) -> r_timestep Nothing conf
+                  Just c -> r_timestep Nothing c
                   Nothing -> HH.div_ []
               ]
           ]
@@ -1131,7 +1155,7 @@ myComp =
               <> "padding-bottom: 20px;"
           ]
           $ flip A.mapWithIndex (toUnfoldable state.trace)
-            $ \i (Tuple c _) -> r_timestep (Just i) c
+            $ \i c -> r_timestep (Just i) c
       ]
     where
     r_timestep :: Maybe Int -> Config -> H.ComponentHTML Query
@@ -1145,7 +1169,7 @@ myComp =
                 Nothing -> ""
           -- <> "overflow: scroll;"
       ] $
-      [ HH.div_ $ flip map (toUnfoldable s) $ \fr ->
+      [ HH.div_ $ flip map (toUnfoldable s.frs) $ \fr ->
           HH.div
             [ HP.attr (HC.AttrName "style")
                 $  "background: peachpuff;"
