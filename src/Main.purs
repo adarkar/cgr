@@ -28,7 +28,7 @@ import Data.Traversable (for, traverse)
 
 import Control.Alt ((<|>))
 import Control.Monad.State (State, runState, evalState)
-import Control.Monad.RWS (RWS, tell, ask, get, gets, put, modify_, runRWS, execRWS, RWSResult(..))
+import Control.Monad.RWS (RWS, tell, ask, get, gets, put, modify_, runRWS, execRWS, evalRWS, RWSResult(..))
 import Control.Monad.Cont (ContT, callCC, runContT)
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.Trans.Class (lift)
@@ -706,19 +706,26 @@ int main() {
 
 type RunS = { config :: Config, nxfrid :: Int }
 
-data RunW = RunW (List Config) String
+type RunW = List (Either Config String)
 
-instance monoidRunW :: Monoid RunW where
-  mempty = RunW Nil ""
-
-instance semigroupRunW :: Semigroup RunW where
-  append (RunW tr1 out1) (RunW tr2 out2) = RunW (tr1 <> tr2) (out1 <> out2)
+foldRunw :: RunW -> List (Tuple Config String)
+foldRunw xs = snd $ evalRWS (for_ xs go) unit (Tuple (Config Nil) "")
+  where
+  go :: Either Config String -> RWS Unit (List (Tuple Config String)) (Tuple Config String) Unit
+  go x = do
+    Tuple sc ss <- get
+    let
+      s' = case x of
+        Left c -> Tuple c ss
+        Right s -> Tuple sc $ ss <> s
+    put s'
+    tell $ singleton s'
 
 trace :: Config -> RunM Unit
-trace c = lift <<< lift $ tell $ RunW (singleton c) ""
+trace c = lift <<< lift $ tell $ singleton $ Left c
 
 output :: String -> RunM Unit
-output s = lift <<< lift $ tell $ RunW Nil s
+output s = lift <<< lift $ tell $ singleton $ Right s
 
 printf :: String -> List Val -> String
 printf ft xs = snd $ execRWS (runParserT ft p) unit xs
@@ -880,8 +887,8 @@ test_runm (Tuple prog c) =
     (prog <> stdlib)
     { config: c, nxfrid: 1 }
 
-runm2lconfig :: RWSResult RunS Unit RunW -> RunW
-runm2lconfig r = let RWSResult s a w = r in w
+runm2lconfig :: RWSResult RunS Unit RunW -> List (Tuple Config String)
+runm2lconfig r = let RWSResult s a w = r in foldRunw w
 
 type HState =
   { text :: String
@@ -890,6 +897,7 @@ type HState =
 
 data Query a
   = Step Int a
+  | HSelTime Int a
   | HRun a
   | HLoad a
   | IsOn (HState -> a)
@@ -915,9 +923,9 @@ myComp =
   render state =
     let
       progtext = preprocessor state.text
-      RunW tr out = case parse progtext of
+      tr = case parse progtext of
         Just x -> runm2lconfig $ test_runm x
-        Nothing -> RunW Nil ""
+        Nothing -> Nil
     in
     HH.div_ $
       [ HH.div
@@ -993,7 +1001,7 @@ myComp =
               ]
               [ HH.pre
                 [ HP.attr (HC.AttrName "style") "margin: 0px;" ]
-                [ HH.text out ]
+                [ HH.text $ fromMaybe "" $ snd <$> tr !! state.tstep ]
               ]
           ]
         , HH.div
@@ -1003,7 +1011,7 @@ myComp =
               <> "margin-left: 2px;"
               <> "margin-right: 2px;"
           ]
-          [ HH.div_ [ HH.text "Time travel" ]
+          [ HH.div_ [ HH.text "Time travel (or click on the time series below)" ]
           , HH.div_
               [ HH.button [ HE.onClick (HE.input_ $ Step (-1)) ] [ HH.text "<" ]
               , HH.text $ " " <> show state.tstep <> " "
@@ -1014,7 +1022,7 @@ myComp =
                   "height: 300px;"
               ]
               [ case tr !! state.tstep of
-                  Just conf -> r_timestep Nothing conf
+                  Just (Tuple conf _) -> r_timestep Nothing conf
                   Nothing -> HH.div_ []
               ]
           ]
@@ -1025,12 +1033,13 @@ myComp =
               <> "padding-bottom: 20px;"
           ]
           $ flip A.mapWithIndex (toUnfoldable tr)
-            $ \i c -> r_timestep (Just i) c
+            $ \i (Tuple c _) -> r_timestep (Just i) c
       ]
     where
     r_timestep :: Maybe Int -> Config -> H.ComponentHTML Query
     r_timestep i (Config s) = HH.div
-      [ HP.attr (HC.AttrName "style")
+      [ HE.onClick $ HE.input_ $ HSelTime $ fromMaybe state.tstep i
+      , HP.attr (HC.AttrName "style")
           $  "display: inline-block;"
           <> "vertical-align: bottom;"
           <> case i of
@@ -1074,6 +1083,10 @@ myComp =
       let nextState = state { tstep = state.tstep + x }
       H.put nextState
       H.raise $ Toggled true
+      pure next
+    HSelTime x next -> do
+      state <- H.get
+      H.put $ state { tstep = x }
       pure next
     HRun next -> do
       H.getHTMLElementRef (H.RefLabel "editor") >>= case _ of
