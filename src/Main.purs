@@ -33,7 +33,7 @@ import Control.Monad.Cont (ContT, callCC, runContT)
 import Control.Monad.Except (ExceptT, runExceptT, throwError)
 import Control.Monad.Trans.Class (lift)
 
-import Text.Parsing.Parser (ParserT, runParserT, Parser, runParser)
+import Text.Parsing.Parser (ParserT, runParserT, Parser, runParser, ParseState(..))
 import Text.Parsing.Parser.String as PS
 import Text.Parsing.Parser.Combinators as PC
 import Text.Parsing.Parser.Token as PT
@@ -118,6 +118,7 @@ data Expr =
   | EUnop PrimopUn Expr
   | ETernop Expr Expr Expr
   | EIncr EIPrePost EIIncDec Expr
+  | EAddr Expr
 
 data EIPrePost = EIPre | EIPost
 data EIIncDec = EIInc | EIDec
@@ -172,6 +173,7 @@ ceval e = case e of
     case pp of
       EIPre -> ceval op *> readlval lv
       EIPost -> readlval lv <* ceval op
+  EAddr a -> VRef <$> leval a
 
 leval :: Expr -> RunM LVal
 leval e = case e of
@@ -272,10 +274,11 @@ type Prog = List { fname :: String, argns :: Argdef, code :: ProgF }
 stdlib :: Prog
 stdlib = fromFoldable
   [ { fname: "printf", argns: Argvar $ fromFoldable ["format"], code: stdlib_printf }
+  , { fname: "scanf", argns: Argvar $ fromFoldable ["format"], code: stdlib_scanf }
   ]
   where
-    stdlib_printf :: ProgF
-    stdlib_printf = ProgIOW
+  stdlib_printf = ProgIOW
+  stdlib_scanf = ProgIOR
 
 type PreprocDef = Map.Map String String
 
@@ -425,6 +428,7 @@ parse input = case runState (runParserT input prog)
         , [ PE.Prefix $ tkc '~' $> EUnop PoBitnot
           , PE.Prefix $ tkc '!' $> EUnop PoNot
           , PE.Prefix $ tkc '-' $> EUnop PoNeg
+          , PE.Prefix $ (PC.lookAhead (PS.string "&&") <|> (tkc '&' $> "")) $> EAddr
           ]
         , [ PE.Infix (tkc '*' $> EBinop PoMul) PE.AssocLeft
           , PE.Infix (tkc '/' $> EBinop PoDiv) PE.AssocLeft
@@ -704,7 +708,7 @@ int main() {
 """
   ]
 
-type RunS = { config :: Config, nxfrid :: Int }
+type RunS = { config :: Config, nxfrid :: Int, stdin :: String }
 
 type RunW = List (Either Config String)
 
@@ -753,6 +757,30 @@ printf ft xs = snd $ execRWS (runParserT ft p) unit xs
         '%' -> lift $ tell $ SCU.singleton '%'
         _ -> pure unit
 
+scanf :: String -> String -> Tuple (List Val) String
+scanf ft inp = case runParser inp (runParserT ft p) of
+  Right (Right x) -> x
+  _ -> Tuple Nil inp
+  where
+  p :: ParserT String (Parser String) (Tuple (List Val) String)
+  p = do
+    _ <- PS.char '%'
+    PS.anyChar >>= case _ of
+      'd' -> lift $ do
+        x <- number
+        (ParseState s _ _) <- get
+        pure $ Tuple (singleton $ VInt x) s
+      _ -> do
+        (ParseState s _ _) <- lift get
+        pure $ Tuple Nil s
+
+  number = do
+    xs <- map ((\x -> x-0x30) <<< toCharCode) <$> someRec PT.digit <* PS.skipSpaces
+    pure $ conv xs 0
+    where
+    conv Nil n = n
+    conv (x:xs) n = conv xs (10*n + x)
+
 type RunM a = ExceptT String (ContT Unit (RWS Prog RunW RunS)) a
 type RK = Val -> RunM Val
 
@@ -765,7 +793,7 @@ runm p kr kbr kcn = case p of
     argsval <- for args ceval
     case lookup id prog_fs of
       Just (Tuple as f) -> do
-        { config: Config c, nxfrid: nxfrid } <- get
+        { config: Config c, nxfrid: nxfrid, stdin: stdin } <- get
         let
           fr = case as of
             Argdef as' -> { name: id, env: Map.fromFoldable $ zip as' argsval, frid: nxfrid }
@@ -777,7 +805,7 @@ runm p kr kbr kcn = case p of
               in { name: id, env: venv, frid: nxfrid }
           y = Config $ fr : c
         trace y
-        put { config: y, nxfrid: nxfrid + 1 }
+        put { config: y, nxfrid: nxfrid + 1, stdin: stdin }
         v <- callCC $ \kr' -> runm f kr' kbr kcn
         modify_ $ \s ->
           let
@@ -827,7 +855,37 @@ runm p kr kbr kcn = case p of
           _ -> throwError "printf: format string is not a valid string"
       _ -> throwError "printf: format string is not a valid ref"
     pure VVoid
-  ProgIOR -> pure VVoid
+  ProgIOR -> do
+    frtop <- framegettop
+    let frid = frtop.frid
+    ftref <- readlval $ LVAtom frid "format"
+    case ftref of
+      VRef (LVAtom frid' id) -> do
+        fr <- frameget frid'
+        case Map.lookup id fr.env of
+          Just (VArray cs) -> do
+            let
+              getvint (VInt x) = Just x
+              getvint _ = Nothing
+              fts = fromCharArray <$> traverse (fromCharCode <=< getvint) cs
+            case fts of
+              Just fts' -> do
+                inp <- gets _.stdin
+                let Tuple vs inp' = scanf fts' inp
+                modify_ $ \s -> s { stdin = inp' }
+                output $ "TEST SCANF: " <> show vs <> "\n"
+                refs <- case Map.lookup "#varargs" frtop.env of
+                  Just (VArray vs') -> pure $ fromFoldable vs'
+                  Just _ -> throwError "invalid varargs array"
+                  Nothing -> pure $ Nil
+                for_ (zip refs vs) $ \x -> do
+                  case x of
+                    Tuple (VRef r') v -> writelval r' v
+                    _ -> pure unit
+              Nothing -> throwError "printf: can't convert format string"
+          _ -> throwError "printf: format string is not a valid string"
+      _ -> throwError "printf: format string is not a valid ref"
+    pure VVoid
   ProgSeq xs -> do
     for_ xs $ \x -> runm x kr kbr kcn
     pure VVoid
@@ -884,8 +942,8 @@ prepare = parse <<< preprocessor
 
 type Trace = List (Tuple Config String)
 
-execprog :: Tuple Prog Config -> Trace
-execprog p =
+execprog :: String -> Tuple Prog Config -> Trace
+execprog stdin p =
   let RWSResult s a w = go p
   in foldRunw w
   where
@@ -895,7 +953,7 @@ execprog p =
     in runRWS
       (runContT r (\_ -> pure unit))
       (prog <> stdlib)
-      { config: static, nxfrid: 1 }
+      { config: static, nxfrid: 1, stdin: stdin }
 
 type HState =
   { text :: String
@@ -928,7 +986,7 @@ myComp =
   initialState =
     let
       text = fromMaybe "" $ snd <$> head examples
-      tr = fromMaybe Nil $ execprog <$> prepare text
+      tr = fromMaybe Nil $ execprog "" <$> prepare text
     in { text: text , trace: tr , tstep: 0 }
 
   render :: HState -> H.ComponentHTML Query
@@ -983,33 +1041,67 @@ myComp =
             [ HH.text "run" ]
           ]
         , HH.div
-          [ HP.attr (HC.AttrName "style")
-              $  "display: inline-block;"
-              <> "vertical-align: top;"
-              <> "width: 350px;"
-              <> "margin-left: 2px;"
-              <> "margin-right: 2px;"
-              <> "background: black;"
-              <> "overflow-x: scroll"
-          ]
-          [ HH.div
-              [ HP.attr (HC.AttrName "style")
-                  $  "background: purple;"
-                  <> "color: white;"
-                  <> "margin: 5px;"
-              ]
-              [ HH.text "Output stream"]
-          , HH.div
-              [ HP.attr (HC.AttrName "style")
-                  $  "font-family: monospace;"
-                  <> "color: lime;"
-                  <> "padding: 5px;"
-              ]
-              [ HH.pre
-                [ HP.attr (HC.AttrName "style") "margin: 0px;" ]
-                [ HH.text $ fromMaybe "" $ snd <$> state.trace !! state.tstep ]
-              ]
-          ]
+            [ HP.attr (HC.AttrName "style")
+                $  "display: inline-block;"
+                <> "vertical-align: top;"
+                <> "width: 350px;"
+                <> "margin-left: 2px;"
+                <> "margin-right: 2px;"
+            ]
+            [ HH.div
+                [ HP.attr (HC.AttrName "style")
+                    $  "background: ivory;"
+                    <> "overflow-x: scroll"
+                ]
+                [ HH.div
+                    [ HP.attr (HC.AttrName "style")
+                        $  "background: honeydew;"
+                        <> "color: black;"
+                        <> "margin: 5px;"
+                    ]
+                    [ HH.text "Input stream"]
+                , HH.div
+                    [ HP.attr (HC.AttrName "style")
+                        $  "font-family: monospace;"
+                        <> "color: black;"
+                        <> "padding: 5px;"
+                    ]
+                    [ HH.div_
+                        [ HH.textarea
+                            [ HP.value "42"
+                            , HP.ref $ H.RefLabel "stdin"
+                            , HP.attr (HC.AttrName "style")
+                                $  "font-family: monospace;"
+                                <> "width: 100%;"
+                                <> "height: 100;"
+                            ]
+                        ]
+                    ]
+                ]
+            , HH.div
+                [ HP.attr (HC.AttrName "style")
+                    $  "background: black;"
+                    <> "overflow-x: scroll"
+                ]
+                [ HH.div
+                    [ HP.attr (HC.AttrName "style")
+                        $  "background: purple;"
+                        <> "color: white;"
+                        <> "margin: 5px;"
+                    ]
+                    [ HH.text "Output stream"]
+                , HH.div
+                    [ HP.attr (HC.AttrName "style")
+                        $  "font-family: monospace;"
+                        <> "color: lime;"
+                        <> "padding: 5px;"
+                    ]
+                    [ HH.pre
+                      [ HP.attr (HC.AttrName "style") "margin: 0px;" ]
+                      [ HH.text $ fromMaybe "" $ snd <$> state.trace !! state.tstep ]
+                    ]
+                ]
+            ]
         , HH.div
           [ HP.attr (HC.AttrName "style")
               $  "display: inline-block;"
@@ -1099,10 +1191,15 @@ myComp =
         Nothing -> pure unit
         Just el -> case HTextArea.fromHTMLElement el of
           Nothing -> pure unit
-          Just t -> do
-            text <- H.liftEffect $ HTextArea.value t
-            let tr = fromMaybe Nil $ execprog <$> prepare text
-            H.put { text: text, trace: tr, tstep: 0 }
+          Just t -> H.getHTMLElementRef (H.RefLabel "stdin") >>= case _ of
+            Nothing -> pure unit
+            Just el2 -> case HTextArea.fromHTMLElement el2 of
+              Nothing -> pure unit
+              Just t_in -> do
+                text <- H.liftEffect $ HTextArea.value t
+                inp <- H.liftEffect $ HTextArea.value t_in
+                let tr = fromMaybe Nil $ execprog inp <$> prepare text
+                H.put { text: text, trace: tr, tstep: 0 }
       pure next
     HLoad next -> do
       H.getHTMLElementRef (H.RefLabel "examplesel") >>= case _ of
