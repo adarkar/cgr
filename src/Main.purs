@@ -549,13 +549,6 @@ parse input = case runState (runParserT input prog)
         , PS.string "char"
         ]
 
-hello_world :: String
-hello_world = """
-int main() {
-  printf("Hello world!\n");
-}
-"""
-
 examples :: List (Tuple String String)
 examples = fromFoldable
   [ Tuple "Hello world" """
@@ -781,7 +774,7 @@ myComp =
   where
 
   initialState :: HState
-  initialState = { text: hello_world, tstep: 0 }
+  initialState = { text: fromMaybe "" $ snd <$> head examples, tstep: 0 }
 
   render :: HState -> H.ComponentHTML Query
   render state =
