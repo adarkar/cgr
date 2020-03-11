@@ -256,6 +256,7 @@ data ProgF =
   | ProgIOR
   | ProgSeq (List ProgF)
   | ProgWhile Expr ProgF
+  | ProgFor Expr Expr Expr ProgF
   | ProgIf Expr ProgF
   | ProgIfElse Expr ProgF ProgF
   | ProgSwitch Expr (List (Tuple (Maybe Val) ProgF)) -- maybe used to encode default
@@ -465,6 +466,17 @@ parse input = case runState (runParserT input prog)
           _ <- tkc ')'
           b <- block <|> stmt
           pure $ ProgWhile c b
+      , PC.try $ do
+          PS.string "for" *> PS.skipSpaces
+          _ <- tkc '('
+          ei <- expr
+          _ <- tkc ';'
+          ec <- expr
+          _ <- tkc ';'
+          ef <- expr
+          _ <- tkc ')'
+          b <- block <|> stmt
+          pure $ ProgFor ei ec ef b
       , PC.try $ do
           PS.string "if" *> PS.skipSpaces
           _ <- tkc '('
@@ -710,6 +722,19 @@ runm p kr kbr kcn = case p of
         callCC $ \kbr' -> do
           _ <- callCC $ \kcn' -> runm x kr kbr' kcn'
           runm p kr kbr' kcn
+  ProgFor ei ec ef x -> do
+    _ <- ceval ei
+    let
+      go = do
+        b <- ceval ec
+        case b of
+          VInt 0 -> pure VVoid
+          _ -> do
+            callCC $ \kbr' -> do
+              _ <- callCC $ \kcn' -> runm x kr kbr' kcn'
+              _ <- ceval ef
+              go
+    go
   ProgIf e x -> do
     b <- ceval e
     case b of
