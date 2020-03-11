@@ -527,19 +527,19 @@ parse input = case runState (runParserT input prog)
     vdecl = PC.choice
       [ PC.try $ do
           id <- ident
+          _ <- tkc '[' *> tkc ']' *> tkc '='
+          _ <- tkc '{'
+          vs <- PC.sepBy number $ tkc ','
+          _ <- tkc '}'
+          pure $ ProgExpr $ EAs (EId id) $ EConst $ VArray $ toUnfoldable $ map VInt vs
+      , PC.try $ do
+          id <- ident
           _ <- tkc '['
           len <- PC.optionMaybe expr
           _ <- tkc ']'
           pure $ case len of
             Just len' -> ProgAllocAry id len'
             Nothing -> ProgAllocVar id
-      , PC.try $ do
-          id <- ident
-          _ <- tkc '[' *> tkc ']' *> tkc '='
-          _ <- tkc '{'
-          vs <- PC.sepBy number $ tkc ','
-          _ <- tkc '}'
-          pure $ ProgExpr $ EAs (EId id) $ EConst $ VArray $ toUnfoldable $ map VInt vs
       , PC.try $ do
           id <- ident
           _ <- tkc '='
