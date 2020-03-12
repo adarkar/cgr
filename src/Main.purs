@@ -778,6 +778,7 @@ scanf ft inp = case runParser inp (runParserT ft p) of
     _ <- PS.char '%'
     PS.anyChar >>= case _ of
       'd' -> lift $ do
+        _<- PS.skipSpaces
         x <- number
         (ParseState s _ _) <- get
         pure $ Tuple (singleton $ VInt x) s
