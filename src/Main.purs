@@ -738,7 +738,9 @@ trace c = lift <<< lift $ tell $ singleton c
 output :: String -> RunM Unit
 output s = do
   Config c <- gets _.config
-  lift <<< lift $ tell $ singleton $ Config $ c { stdout = c.stdout <> s }
+  let c' = Config $ c { stdout = c.stdout <> s }
+  lift <<< lift $ tell $ singleton c'
+  modify_ _{ config = c' }
 
 printf :: String -> List Val -> String
 printf ft xs = snd $ execRWS (runParserT ft p) unit xs
@@ -884,9 +886,8 @@ runm p kr kbr kcn = case p of
                 let Tuple vs inp' = scanf fts' inp
                 Config c <- gets _.config
                 let c' = Config $ c { stdin = inp' }
-                modify_ $ \s -> s { config = c' }
+                modify_ _{ config = c' }
                 trace c'
-                output $ "TEST SCANF: " <> show vs <> "\n"
                 refs <- case Map.lookup "#varargs" frtop.env of
                   Just (VArray vs') -> pure $ fromFoldable vs'
                   Just _ -> throwError "invalid varargs array"
